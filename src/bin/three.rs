@@ -1,0 +1,69 @@
+use ndarray::linalg::general_mat_mul as mat_mul;
+use ndarray::{Array, Array2, array};
+
+// /// `decay`: Sometimes reffered to as `beta`.
+// /// `membrane_potential`: Sometimes reffered to as `mem`.
+// fn forward(decay: f32, membrane_potential: f32)
+
+fn main() {
+    let time_steps = 3;
+
+    // Pre-synpatic potentials e.g. the input encodings across time
+    // 1x2
+    let input = vec![
+        array![[0f32, 0f32]],
+        array![[1f32, 0f32]],
+        array![[0f32, 1f32]],
+        array![[1f32, 1f32]],
+        array![[0f32, 0f32]],
+    ];
+    assert!(input.len() >= time_steps);
+
+    // the shape of our XOR network is 2->3->1
+
+    // weights from neurons in 1st layer to 2nd layer
+    let w2 = array![[0.7f32, 0.7f32,], [0.7f32, 0.7f32,], [0.7f32, 0.7f32,]];
+    // beta/decay for neurons in 2nd layer
+    let b2v = 0.8f32;
+    let b2 = Array::from_elem((1, 3), b2v);
+
+    // thresholds for neurons in 2nd layer
+    let t2v = 1f32;
+    let t2 = Array::from_elem((1, 3), t2v);
+    // membrane potential for neurons in 2nd layer;
+    let mut m2 = Array::from_elem((1, 3), 0f32);
+
+    // weights from neurons in 2nd layer to 3rd layer
+    let w3 = array![[0.7f32, 0.7f32, 0.7f32], [0.7f32, 0.7f32, 0.7f32],];
+    // beta/decay for neurons in 3rd layer
+    let b3v = 0.8f32;
+    let b3 = Array::from_elem((1, 2), b3v);
+
+    // thresholds for neurons in the 3rd layer
+    let t3v = 1f32;
+    let t3 = Array::from_elem((1, 2), t2v);
+    // membrane potential for neurons in 3rd layer
+    let mut m3 = Array::from_elem((1, 2), 0f32);
+
+    for t in 0..time_steps {
+        // Layer 1->2
+        let s2 = m2.mapv(|m| (m > t2v) as u8 as f32);
+        println!("s2: {s2:?}");
+
+        // Matrix sizes: 1x2 * 2x3 + 1x3
+        let w2t = w2.t();
+        mat_mul(1f32, &input[t], &w2t, b2v, &mut m2);
+        println!("bm2: {m2:?}");
+        m2 = m2 - (&b2 * s2 * &t2);
+        println!("m2: {m2:?}");
+
+        // Layer 2->3
+        let s3 = m3.mapv(|m| (m > t3v) as u8 as f32);
+        println!("s3: {s3:?}");
+
+        // Matrix sizes: 1x3 * 3x2 + 1x2
+        mat_mul(1f32, &m2, &w3.t(), b3v, &mut m3);
+        m3 = m3 - (&b3 * s3 * &t3);
+        println!("m3: {m3:?}");
+    }
+}
