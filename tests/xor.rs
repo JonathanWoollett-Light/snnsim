@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use ndarray::Array3;
 use ndarray::Axis;
@@ -16,22 +18,15 @@ use snnsim::net::Network;
 // each example.
 #[test]
 fn xor() {
-    let epochs = 4000;
+    let epochs = 10_000;
     let batch_size = 4;
-    let time_steps = 200;
+    let time_steps = 50;
+    let learning_rate = 0.01f32;
     let inputs = array![[1f32, 1f32], [0f32, 0f32], [1f32, 0f32], [0f32, 1f32]];
     let targets = array![[0f32], [0f32], [1f32], [1f32]];
     let rate_encoded_inputs = rate_coding(inputs, time_steps);
     let rate_encoded_targets = rate_coding(targets, time_steps);
     let output_spikes = rate_encoded_targets.dim().2;
-    println!(
-        "rate_encoded_inputs.shape(): {:?}",
-        rate_encoded_inputs.shape()
-    );
-    println!(
-        "rate_encoded_targets.shape(): {:?}",
-        rate_encoded_targets.shape()
-    );
 
     // the shape of our XOR network is 2->3->1
     // the weights will be 2x3 and 3x1
@@ -46,24 +41,27 @@ fn xor() {
     //     array![[1f32], [-5f32], [1f32]],
     // ];
 
+    // Create progress bars for training.
     // Progress bar style
+    let multi_bar = MultiProgress::new();
     let style = ProgressStyle::with_template(
         "{bar:40} {pos:>7}/{len:>7} [{elapsed_precise} / {eta_precise}] {per_sec} {msg}",
     )
     .unwrap();
-    let multibar = MultiProgress::new();
-    let epochs_bar = multibar.add(
+    let epochs_bar = multi_bar.add(
         ProgressBar::new(epochs)
             .with_style(style.clone())
             .with_message("epochs"),
     );
-    let time_steps_bar = multibar.add(
+    let time_steps_bar = multi_bar.add(
         ProgressBar::new(time_steps as u64)
             .with_style(style.clone())
             .with_message("time steps"),
     );
 
+    let mut best_accuracy = f32::MAX;
     for _epoch in 0..epochs {
+        // Perform forward pass through all time steps.
         let mut spikes = Array3::zeros([0, batch_size, output_spikes]);
         for time_step_inputs in rate_encoded_inputs.axis_iter(Axis(0)) {
             let time_step_spikes = net.forward(time_step_inputs.to_owned());
@@ -72,21 +70,48 @@ fn xor() {
                 .unwrap();
             time_steps_bar.inc(1);
         }
-        time_steps_bar.reset();
-        let cost =
-            (spikes - &rate_encoded_targets).abs().sum() / (time_steps as f32 * batch_size as f32);
 
-        epochs_bar.set_message(format!("cost: {cost}"));
+        // If we use `time_steps_bar.reset()` it resets the `/s` metric, since
+        // we want to preserve this we just reset parts.
+        time_steps_bar.set_position(0);
+        time_steps_bar.reset_elapsed();
+        time_steps_bar.reset_eta();
+
+        // Get epoch accuracy.
+        let accuracy =
+            (spikes - &rate_encoded_targets).abs().sum() / (time_steps as f32 * batch_size as f32);
+        best_accuracy = match best_accuracy.partial_cmp(&accuracy) {
+            Some(Ordering::Greater) => accuracy,
+            _ => best_accuracy,
+        };
+
+        // Display accuracy.
+        epochs_bar.set_message(format!(
+            "current: {:.2}%, best: {:.2}%",
+            accuracy * 100f32,
+            best_accuracy * 100f32
+        ));
+
+        // Calculate weight updates.
         let updates = net.backward(&rate_encoded_targets);
-        net.update(0.001f32, updates);
+
+        // Update weights.
+        net.update(learning_rate, updates);
+
+        // Increment epoch display.
         epochs_bar.inc(1);
     }
     time_steps_bar.finish_and_clear();
     epochs_bar.finish();
 
-    println!("updates:");
-    for update in &net.weights {
-        println!("\t{:?} {:.5?}", update.shape(), update.as_slice().unwrap());
+    // Display final weights.
+    println!("weights:");
+    for weights in &net.weights {
+        println!(
+            "\t{:?} {:.5?}",
+            weights.shape(),
+            weights.as_slice().unwrap()
+        );
     }
     assert!(false);
 }
