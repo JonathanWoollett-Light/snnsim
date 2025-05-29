@@ -4,7 +4,7 @@ use ndarray::{Array2, Array3};
 // TODO This is both wrong (when 1st value should be 1 it will always be 0, e.g.
 // 1 = [0,1,1,1], 0.5 = [0,0,1,0,1,0]) and slow  (it has a for loop). Speed it
 // up and fix it.
-/// Rate encodes floating spatial data into binary temporal-spatial data.
+/// Rate encodes floating-point spatial data into binary temporal-spatial data.
 ///
 /// Expects `data` to be of shape `[samples x features]` and
 /// returns an array of shape `[time steps x samples x features].`

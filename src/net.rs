@@ -1,5 +1,8 @@
+use std::cell::{LazyCell, OnceCell};
 use std::f32::consts::PI;
 
+use cudarc::nvrtc::compile_ptx;
+use cudarc::nvrtc::safe::Ptx;
 use ndarray::Array3;
 use ndarray::{Array, Array2, Data, Ix2, RawData};
 use ndarray::{ArrayBase, Axis};
@@ -19,12 +22,12 @@ pub struct Network {
     pub inputs: Vec<Array2<f32>>,
 }
 impl Network {
+    /// `batch_size`: Number of samples in each training batch.
     pub fn new(
         first: usize,
         hidden_layers: &[usize],
-        weight_distribution: impl rand_distr::Distribution<f32>,
-        // Number of samples in each training batch.
-        batch: usize,
+        weight_distribution: impl ndarray_rand::rand_distr::Distribution<f32>,
+        batch_size: usize,
     ) -> Self {
         let (weights, layers) = std::iter::once(first)
             .chain(hidden_layers.iter().copied())
@@ -32,7 +35,12 @@ impl Network {
             .map(|(a, b)| {
                 (
                     Array::random((a, b), &weight_distribution),
-                    Layer::new(0.8f32, 1f32, b, batch),
+                    Layer::new(
+                        crate::DEFAULT_DECAY,
+                        crate::DEFAULT_THRESHOLD,
+                        b,
+                        batch_size,
+                    ),
                 )
             })
             .unzip();
@@ -49,6 +57,7 @@ impl Network {
     /// Returns `[samples x output spikes]`.
     pub fn forward(&mut self, mut spikes: Array2<f32>) -> Array2<f32> {
         self.inputs.push(spikes.clone());
+
         for (layer, weights) in self.layers.iter_mut().zip(self.weights.iter()) {
             spikes = layer.forward(&spikes, weights);
         }
@@ -145,13 +154,13 @@ pub struct Layer {
 impl Layer {
     /// - `size`: Number of neurons in the layer.
     /// - `batch`: Number of samples in each training batch.
-    fn new(decay: f32, threshold: f32, size: usize, batch: usize) -> Self {
+    fn new(decay: f32, threshold: f32, neurons: usize, batch_size: usize) -> Self {
         Self {
             decay_value: decay,
-            decay: Array::from_elem((batch, size), decay),
+            decay: Array::from_elem((batch_size, neurons), decay),
             threshold_value: threshold,
-            threshold: Array::from_elem((batch, size), threshold),
-            membrane_potential: Array::from_elem((batch, size), 0f32),
+            threshold: Array::from_elem((batch_size, neurons), threshold),
+            membrane_potential: Array::from_elem((batch_size, neurons), 0f32),
             weighted_inputs: Vec::new(),
             spikes: Vec::new(),
         }
@@ -159,7 +168,8 @@ impl Layer {
     /// Executes the forward pass returning which neurons spiked.
     /// The input is given after the weighted are applied.
     ///
-    /// `input`: `[samples x features]`
+    /// - `input`: `[samples x features]`
+    /// - `weights`: `[features x neurons]`
     fn forward<T: RawData<Elem = f32> + Data>(
         &mut self,
         input: &Array2<f32>,
@@ -174,14 +184,6 @@ impl Layer {
 
         // Store weighted inputs for backprop.
         self.weighted_inputs.push(weighted_inputs);
-        // mat_mul(
-        //     1f32,
-        //     input,
-        //     &weights,
-        //     self.decay_value,
-        //     &mut self.membrane_potential,
-        // );
-        // println!("bm2: {:?}", self.membrane_potential);
 
         // Apply threshold reset.
         self.membrane_potential =

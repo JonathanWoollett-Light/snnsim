@@ -1,4 +1,6 @@
 use std::cmp::Ordering;
+use std::time::Duration;
+use std::time::Instant;
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use ndarray::Array3;
@@ -17,7 +19,7 @@ use snnsim::net::Network;
 // achieve 100% accuracy and will always be simply balancing how good it is at
 // each example.
 #[test]
-fn xor() {
+fn xor_cpu() {
     let epochs = 10_000;
     let batch_size = 4;
     let time_steps = 50;
@@ -59,9 +61,13 @@ fn xor() {
             .with_message("time steps"),
     );
 
+    let mut foreprop_time = Duration::ZERO;
+    let mut backprop_time = Duration::ZERO;
+
     let mut best_accuracy = f32::MAX;
-    for _epoch in 0..epochs {
+    for epoch in 0..epochs {
         // Perform forward pass through all time steps.
+        let start = Instant::now();
         let mut spikes = Array3::zeros([0, batch_size, output_spikes]);
         for time_step_inputs in rate_encoded_inputs.axis_iter(Axis(0)) {
             let time_step_spikes = net.forward(time_step_inputs.to_owned());
@@ -70,6 +76,7 @@ fn xor() {
                 .unwrap();
             time_steps_bar.inc(1);
         }
+        foreprop_time += start.elapsed();
 
         // If we use `time_steps_bar.reset()` it resets the `/s` metric, since
         // we want to preserve this we just reset parts.
@@ -87,13 +94,17 @@ fn xor() {
 
         // Display accuracy.
         epochs_bar.set_message(format!(
-            "current: {:.2}%, best: {:.2}%",
+            "current: {:.2}%, best: {:.2}%, backprop: {:?}, foreprop: {:?}",
             accuracy * 100f32,
-            best_accuracy * 100f32
+            best_accuracy * 100f32,
+            backprop_time.div_f32((1 + epoch) as f32),
+            foreprop_time.div_f32((1 + epoch) as f32)
         ));
 
         // Calculate weight updates.
+        let start = Instant::now();
         let updates = net.backward(&rate_encoded_targets);
+        backprop_time += start.elapsed();
 
         // Update weights.
         net.update(learning_rate, updates);
@@ -112,6 +123,75 @@ fn xor() {
             weights.shape(),
             weights.as_slice().unwrap()
         );
+    }
+    assert!(false);
+}
+
+#[test]
+fn xor_cpu_foreprop() {
+    let batch_size = 4;
+    let time_steps = 4;
+    let output_spikes = 1;
+
+    // 2->3->1
+    let mut net = Network::new(
+        2,
+        &[3, output_spikes],
+        rand_distr::StandardNormal,
+        batch_size,
+    );
+    net.weights = vec![
+        array![[2f32, 0.21f32, 0f32], [0f32, 0.21f32, 2f32]],
+        array![[1f32], [-5f32], [1f32]],
+    ];
+
+    let inputs = array![[1f32, 1f32], [0f32, 0f32], [1f32, 0f32], [0f32, 1f32]];
+    let rate_encoded_inputs = rate_coding(inputs, time_steps);
+
+    for time_step_inputs in rate_encoded_inputs.axis_iter(Axis(0)) {
+        let time_step_spikes = net.forward(time_step_inputs.to_owned());
+        println!("{time_step_spikes:?}");
+    }
+    assert!(false);
+}
+
+#[test]
+fn xor_cuda_foreprop() {
+    let batch_size = 4;
+    let time_steps = 4;
+    let output_spikes = 1;
+
+    // 2->3->1
+    let mut net = snnsim::cuda::net::Network::new(
+        2,
+        &[3, output_spikes],
+        rand_distr::StandardNormal,
+        batch_size,
+        time_steps,
+    );
+    net.weights = vec![
+        net.stream
+            .memcpy_stod(
+                array![[2f32, 0.21f32, 0f32], [0f32, 0.21f32, 2f32]]
+                    .as_slice()
+                    .unwrap(),
+            )
+            .unwrap(),
+        net.stream
+            .memcpy_stod(array![[1f32], [-5f32], [1f32]].as_slice().unwrap())
+            .unwrap(),
+    ];
+
+    let inputs = array![[1f32, 1f32], [0f32, 0f32], [1f32, 0f32], [0f32, 1f32]];
+    let rate_encoded_inputs = rate_coding(inputs, time_steps);
+    let rate_encoded_inputs = rate_encoded_inputs
+        .axis_iter(Axis(0))
+        .map(|axis| net.stream.memcpy_stod(axis.as_slice().unwrap()).unwrap())
+        .collect::<Vec<_>>();
+
+    for time_step_inputs in rate_encoded_inputs {
+        let time_step_spikes = net.forward(time_step_inputs.to_owned());
+        println!("{:?}", net.stream.memcpy_dtov(&time_step_spikes).unwrap());
     }
     assert!(false);
 }
