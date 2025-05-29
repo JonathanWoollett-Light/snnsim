@@ -1,10 +1,8 @@
-use ndarray::ArrayBase;
-use ndarray::linalg::general_mat_mul as mat_mul;
-use ndarray::{Array, Array2, Data, Ix2, RawData, array};
-use ndarray_rand::RandomExt;
-use ndarray_rand::rand_distr::{self, Distribution};
-use std::f32::consts::PI;
-use std::iter::repeat;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use ndarray::Array3;
+use ndarray::Axis;
+use ndarray::array;
+use ndarray_rand::rand_distr::{self};
 use snnsim::encode::rate_coding;
 use snnsim::net::Network;
 
@@ -14,46 +12,81 @@ use snnsim::net::Network;
 //
 // In this specific example, the inhibitory neuron will always eventually fire
 // as a result of the non-linear decay rate, meaning that the network will never
-// acheive 100% accuracy and will always be simply balancing how good it is at
+// achieve 100% accuracy and will always be simply balancing how good it is at
 // each example.
 #[test]
 fn xor() {
-    let time_steps = 100;
-
-    // Pre-synpatic potentials e.g. the input encodings across time
-    let inputs = array![[1f32, 1f32], [0f32,0f32], [1f32,0f32], [0f32,1f32]].into_dyn();
-    let targets = array![0f32,0f32,1f32,1f32].into_dyn();
-    let rate_encoded_inputs = rate_coding(inputs,100);
-    let rate_encoded_targets = rate_coding(targets,100);
-    println!("rate_encoded_inputs.shape(): {:?}", rate_encoded_inputs.shape());
-    println!("rate_encoded_targets.shape(): {:?}", rate_encoded_targets.shape());
-    assert!(false);
+    let epochs = 4000;
+    let batch_size = 4;
+    let time_steps = 200;
+    let inputs = array![[1f32, 1f32], [0f32, 0f32], [1f32, 0f32], [0f32, 1f32]];
+    let targets = array![[0f32], [0f32], [1f32], [1f32]];
+    let rate_encoded_inputs = rate_coding(inputs, time_steps);
+    let rate_encoded_targets = rate_coding(targets, time_steps);
+    let output_spikes = rate_encoded_targets.dim().2;
+    println!(
+        "rate_encoded_inputs.shape(): {:?}",
+        rate_encoded_inputs.shape()
+    );
+    println!(
+        "rate_encoded_targets.shape(): {:?}",
+        rate_encoded_targets.shape()
+    );
 
     // the shape of our XOR network is 2->3->1
     // the weights will be 2x3 and 3x1
-    let weights = vec![
-        array![[2f32, 0.21f32, 0f32], [0f32, 0.21f32, 2f32]],
-        array![[1f32], [-5f32], [1f32]],
-    ];
-    let mut net = Network::new(2, &[3, 1], rand_distr::StandardNormal);
-    net.weights = weights;
+    let mut net = Network::new(
+        2,
+        &[3, output_spikes],
+        rand_distr::StandardNormal,
+        batch_size,
+    );
+    // net.weights = vec![
+    //     array![[2f32, 0.21f32, 0f32], [0f32, 0.21f32, 2f32]],
+    //     array![[1f32], [-5f32], [1f32]],
+    // ];
 
+    // Progress bar style
+    let style = ProgressStyle::with_template(
+        "{bar:40} {pos:>7}/{len:>7} [{elapsed_precise} / {eta_precise}] {per_sec} {msg}",
+    )
+    .unwrap();
+    let multibar = MultiProgress::new();
+    let epochs_bar = multibar.add(
+        ProgressBar::new(epochs)
+            .with_style(style.clone())
+            .with_message("epochs"),
+    );
+    let time_steps_bar = multibar.add(
+        ProgressBar::new(time_steps as u64)
+            .with_style(style.clone())
+            .with_message("time steps"),
+    );
 
-    for epoch in 0..100 {
-        let mut total = Array::from_elem((1, 1), 0f32);
-        for t in 0..time_steps {
-            let s = net.forward(inputs[t].clone());
-            // println!("s: {:?}",s.as_slice().unwrap());
-            total = total + s;
+    for _epoch in 0..epochs {
+        let mut spikes = Array3::zeros([0, batch_size, output_spikes]);
+        for time_step_inputs in rate_encoded_inputs.axis_iter(Axis(0)) {
+            let time_step_spikes = net.forward(time_step_inputs.to_owned());
+            spikes
+                .append(Axis(0), time_step_spikes.insert_axis(Axis(0)).view())
+                .unwrap();
+            time_steps_bar.inc(1);
         }
-        total /= time_steps as f32;
-        println!("total: {:?}", total.as_slice().unwrap());
+        time_steps_bar.reset();
+        let cost =
+            (spikes - &rate_encoded_targets).abs().sum() / (time_steps as f32 * batch_size as f32);
 
-        let updates = net.backward(targets.as_slice());
-        // println!("updates:");
-        // for update in &updates {
-        //     println!("\t{:?} {:.5?}",update.shape(), update.as_slice().unwrap());
-        // }
-        net.update(0.1f32, updates);
+        epochs_bar.set_message(format!("cost: {cost}"));
+        let updates = net.backward(&rate_encoded_targets);
+        net.update(0.001f32, updates);
+        epochs_bar.inc(1);
     }
+    time_steps_bar.finish_and_clear();
+    epochs_bar.finish();
+
+    println!("updates:");
+    for update in &net.weights {
+        println!("\t{:?} {:.5?}", update.shape(), update.as_slice().unwrap());
+    }
+    assert!(false);
 }

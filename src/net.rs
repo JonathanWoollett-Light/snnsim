@@ -1,15 +1,14 @@
 use std::f32::consts::PI;
-use std::iter::repeat;
 
-use ndarray::ArrayBase;
-use ndarray::linalg::general_mat_mul as mat_mul;
-use ndarray::{Array, Array2, Data, Ix2, RawData, array};
+use ndarray::Array3;
+use ndarray::{Array, Array2, Data, Ix2, RawData};
+use ndarray::{ArrayBase, Axis};
 use ndarray_rand::RandomExt;
-use ndarray_rand::rand_distr::{self, Distribution};
+use ndarray_rand::rand_distr;
 
 // use ndarray::Array1;
-// /// `decay`: Sometimes reffered to as `beta`.
-// /// `membrane_potential`: Sometimes reffered to as `mem`.
+// /// `decay`: Sometimes referred to as `beta`.
+// /// `membrane_potential`: Sometimes referred to as `mem`.
 // fn forward(decay: f32, membrane_potential: f32)
 
 pub struct Network {
@@ -24,6 +23,8 @@ impl Network {
         first: usize,
         hidden_layers: &[usize],
         weight_distribution: impl rand_distr::Distribution<f32>,
+        // Number of samples in each training batch.
+        batch: usize,
     ) -> Self {
         let (weights, layers) = std::iter::once(first)
             .chain(hidden_layers.iter().copied())
@@ -31,7 +32,7 @@ impl Network {
             .map(|(a, b)| {
                 (
                     Array::random((a, b), &weight_distribution),
-                    Layer::new(0.8f32, 1f32, b),
+                    Layer::new(0.8f32, 1f32, b, batch),
                 )
             })
             .unzip();
@@ -42,23 +43,30 @@ impl Network {
         }
     }
     /// Pass data through the network.
+    ///
+    /// `spikes`: `[samples x features]`.
+    ///
+    /// Returns `[samples x output spikes]`.
     pub fn forward(&mut self, mut spikes: Array2<f32>) -> Array2<f32> {
         self.inputs.push(spikes.clone());
         for (layer, weights) in self.layers.iter_mut().zip(self.weights.iter()) {
-            spikes = layer.forward(&spikes, &weights);
+            spikes = layer.forward(&spikes, weights);
         }
-        return spikes;
+        spikes
     }
+
     /// Calculate weight updates.
-    pub fn backward(&mut self, target_spikes: &[Array2<f32>]) -> Vec<Array2<f32>> {
+    ///
+    /// - `target_spikes`: `[time steps x samples x features]`
+    pub fn backward(&mut self, target_spikes: &Array3<f32>) -> Vec<Array2<f32>> {
         // This check should really also apply to all layers not just the output layer.
         assert_eq!(
-            target_spikes.len(),
+            target_spikes.dim().0,
             self.layers.last().unwrap().spikes.len()
         );
 
         // When updating `delta_weights` both `output_error` and
-        // `output_previous_spikes` are matricies of shapes 1xA and 1xB,
+        // `output_previous_spikes` are matrices of shapes 1xA and 1xB,
         // we want the result to be AxB (this is the same as `numpy.outer`).
         let mut delta_weights = self
             .weights
@@ -66,12 +74,12 @@ impl Network {
             .map(|w| Array2::<f32>::zeros(w.raw_dim()))
             .collect::<Vec<_>>();
 
-        for ti in (0..target_spikes.len()).rev() {
+        for (ti, targets) in target_spikes.axis_iter(Axis(0)).rev().enumerate() {
             let mut li = self.layers.len() - 1;
 
             // Output layers.
             let output_grad = surrogate_gradient(&self.layers[li].weighted_inputs[ti]);
-            let output_error = (&self.layers[li].spikes[ti] - &target_spikes[ti]) * output_grad;
+            let output_error = (&self.layers[li].spikes[ti] - &targets) * output_grad;
             let output_previous_spikes = &self.layers[li - 1].spikes[ti];
             delta_weights[li] += &output_previous_spikes.t().dot(&output_error);
             let mut delta_next = output_error;
@@ -94,7 +102,7 @@ impl Network {
             delta_weights[li] += &previous_spikes.t().dot(&error);
         }
 
-        // Divde weight updates by timesteps.
+        // Divide weight updates by time steps.
         for delta_weights in delta_weights.iter_mut() {
             *delta_weights /= target_spikes.len() as f32;
         }
@@ -122,31 +130,36 @@ fn surrogate_gradient(membrane_potentials: &Array2<f32>) -> Array2<f32> {
     1f32 / (1f32 + (PI * membrane_potentials).pow2())
 }
 
-struct Layer {
+pub struct Layer {
     // Stuff needed for foreprop:
     decay_value: f32,
     decay: Array2<f32>,
     threshold_value: f32,
     threshold: Array2<f32>,
+    /// `[samples x neurons]`
     membrane_potential: Array2<f32>,
     // Stuff only needed for backprop:
     weighted_inputs: Vec<Array2<f32>>, // Stores the weighted inputs for previous time-steps.
     spikes: Vec<Array2<f32>>,
 }
 impl Layer {
-    fn new(decay: f32, threshold: f32, size: usize) -> Self {
+    /// - `size`: Number of neurons in the layer.
+    /// - `batch`: Number of samples in each training batch.
+    fn new(decay: f32, threshold: f32, size: usize, batch: usize) -> Self {
         Self {
             decay_value: decay,
-            decay: Array::from_elem((1, size), decay),
+            decay: Array::from_elem((batch, size), decay),
             threshold_value: threshold,
-            threshold: Array::from_elem((1, size), threshold),
-            membrane_potential: Array::from_elem((1, size), 0f32),
+            threshold: Array::from_elem((batch, size), threshold),
+            membrane_potential: Array::from_elem((batch, size), 0f32),
             weighted_inputs: Vec::new(),
             spikes: Vec::new(),
         }
     }
-    // Executes the forward pass returning which neurons spiked.
-    // The input is given after the weighted are applied.
+    /// Executes the forward pass returning which neurons spiked.
+    /// The input is given after the weighted are applied.
+    ///
+    /// `input`: `[samples x features]`
     fn forward<T: RawData<Elem = f32> + Data>(
         &mut self,
         input: &Array2<f32>,
