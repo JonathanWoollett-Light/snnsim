@@ -130,7 +130,7 @@ fn xor_cpu() {
 #[test]
 fn xor_cpu_foreprop() {
     let batch_size = 4;
-    let time_steps = 4;
+    let time_steps = 2;
     let output_spikes = 1;
 
     // 2->3->1
@@ -149,8 +149,27 @@ fn xor_cpu_foreprop() {
     let rate_encoded_inputs = rate_coding(inputs, time_steps);
 
     for time_step_inputs in rate_encoded_inputs.axis_iter(Axis(0)) {
+        println!("bruh: {:?}", time_step_inputs.nrows());
+        println!("in: {:?}", time_step_inputs.as_slice().unwrap());
         let time_step_spikes = net.forward(time_step_inputs.to_owned());
-        println!("{time_step_spikes:?}");
+        println!("out: {:?}", time_step_spikes.as_slice().unwrap());
+    }
+
+    for layer in net.layers {
+        for time_step in 0..time_steps {
+            let a = &layer.weighted_inputs[time_step];
+            let b = layer.weighted_inputs[time_step].as_slice().unwrap();
+            println!(
+                "weighted_inputs[{time_step}]: ({})({}, {}) {b:?}",
+                b.len(),
+                a.nrows(),
+                a.ncols()
+            );
+        }
+        println!(
+            "membrane_potential: {:?}",
+            layer.membrane_potential.as_slice().unwrap()
+        );
     }
     assert!(false);
 }
@@ -158,7 +177,7 @@ fn xor_cpu_foreprop() {
 #[test]
 fn xor_cuda_foreprop() {
     let batch_size = 4;
-    let time_steps = 4;
+    let time_steps = 2;
     let output_spikes = 1;
 
     // 2->3->1
@@ -190,8 +209,29 @@ fn xor_cuda_foreprop() {
         .collect::<Vec<_>>();
 
     for time_step_inputs in rate_encoded_inputs {
+        println!(
+            "in: {:?}",
+            net.stream.memcpy_dtov(&time_step_inputs).unwrap()
+        );
         let time_step_spikes = net.forward(time_step_inputs.to_owned());
-        println!("{:?}", net.stream.memcpy_dtov(&time_step_spikes).unwrap());
+        println!(
+            "out: {:?}",
+            net.stream.memcpy_dtov(&time_step_spikes).unwrap()
+        );
+    }
+
+    for layer in net.layers {
+        for time_step in 0..time_steps {
+            let s = net
+                .stream
+                .memcpy_dtov(&layer.weighted_inputs[time_step])
+                .unwrap();
+            println!("weighted_inputs[{time_step}]: ({}) {s:?}", s.len());
+        }
+        println!(
+            "membrane_potential: {:?}",
+            net.stream.memcpy_dtov(&layer.membrane_potential).unwrap()
+        );
     }
     assert!(false);
 }

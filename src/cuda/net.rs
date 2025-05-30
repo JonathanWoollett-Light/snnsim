@@ -1,7 +1,4 @@
-use std::{
-    cell::LazyCell,
-    sync::{Arc, LazyLock, OnceLock},
-};
+use std::sync::{Arc, LazyLock, OnceLock};
 
 use cudarc::driver::PushKernelArg;
 use cudarc::{
@@ -110,7 +107,7 @@ static FOREPROP_FUNCTION: OnceLock<CudaFunction> = OnceLock::new();
 
 fn foreprop_module(context: Arc<CudaContext>) -> Arc<CudaModule> {
     FOREPROP_MODULE
-        .get_or_init(|| context.load_module((&*FOREWORD_KERNEL).clone()).unwrap())
+        .get_or_init(|| context.load_module((*FOREWORD_KERNEL).clone()).unwrap())
         .clone()
 }
 fn foreprop_function<'a>(context: Arc<CudaContext>) -> &'a CudaFunction {
@@ -122,15 +119,15 @@ fn foreprop_function<'a>(context: Arc<CudaContext>) -> &'a CudaFunction {
 }
 
 pub struct Layer {
-    cublas: Arc<CudaBlas>,
-    membrane_potential: CudaSlice<f32>,
-    weighted_inputs: Vec<CudaSlice<f32>>,
-    spikes: Vec<CudaSlice<f32>>,
-    batch_size: usize,
-    input_features: usize,
-    neurons: usize,
-    threshold: f32,
-    decay: f32,
+    pub cublas: Arc<CudaBlas>,
+    pub membrane_potential: CudaSlice<f32>,
+    pub weighted_inputs: Vec<CudaSlice<f32>>,
+    pub spikes: Vec<CudaSlice<f32>>,
+    pub batch_size: usize,
+    pub input_features: usize,
+    pub neurons: usize,
+    pub threshold: f32,
+    pub decay: f32,
 }
 impl Layer {
     pub fn new(
@@ -168,6 +165,11 @@ impl Layer {
         context: Arc<CudaContext>,
         stream: Arc<CudaStream>,
     ) -> CudaSlice<f32> {
+        println!("input: {:?}", stream.memcpy_dtov(&input).unwrap());
+        println!("weights: {:?}", stream.memcpy_dtov(weights).unwrap());
+
+        // TODO It would be better to store everything column major to avoid
+        // needing the transposes here.
         // TODO This does quite a bit of redundant work, would it be more
         // efficient to write a custom kernel that just does the matrix
         // multiplication?
@@ -176,8 +178,8 @@ impl Layer {
             self.cublas
                 .gemm(
                     GemmConfig {
-                        transa: cublasOperation_t::CUBLAS_OP_N,
-                        transb: cublasOperation_t::CUBLAS_OP_N,
+                        transa: cublasOperation_t::CUBLAS_OP_T,
+                        transb: cublasOperation_t::CUBLAS_OP_T,
                         m: self.batch_size as i32,
                         n: self.neurons as i32,
                         k: self.input_features as i32,
@@ -193,6 +195,12 @@ impl Layer {
                 )
                 .unwrap()
         }
+        println!(
+            "weighted_inputs: {:?}",
+            stream
+                .memcpy_dtov(&self.weighted_inputs[time_step])
+                .unwrap()
+        );
 
         let mut builder = stream.launch_builder(foreprop_function(context));
         builder
@@ -209,8 +217,4 @@ impl Layer {
         }
         self.spikes[time_step].clone()
     }
-}
-pub fn test() {
-    let ctx = cudarc::driver::CudaContext::new(0).unwrap();
-    let stream = ctx.default_stream();
 }

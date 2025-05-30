@@ -1,13 +1,9 @@
-use std::cell::{LazyCell, OnceCell};
 use std::f32::consts::PI;
 
-use cudarc::nvrtc::compile_ptx;
-use cudarc::nvrtc::safe::Ptx;
 use ndarray::Array3;
 use ndarray::{Array, Array2, Data, Ix2, RawData};
 use ndarray::{ArrayBase, Axis};
 use ndarray_rand::RandomExt;
-use ndarray_rand::rand_distr;
 
 // use ndarray::Array1;
 // /// `decay`: Sometimes referred to as `beta`.
@@ -141,15 +137,15 @@ fn surrogate_gradient(membrane_potentials: &Array2<f32>) -> Array2<f32> {
 
 pub struct Layer {
     // Stuff needed for foreprop:
-    decay_value: f32,
-    decay: Array2<f32>,
-    threshold_value: f32,
-    threshold: Array2<f32>,
+    pub decay_value: f32,
+    pub decay: Array2<f32>,
+    pub threshold_value: f32,
+    pub threshold: Array2<f32>,
     /// `[samples x neurons]`
-    membrane_potential: Array2<f32>,
+    pub membrane_potential: Array2<f32>,
     // Stuff only needed for backprop:
-    weighted_inputs: Vec<Array2<f32>>, // Stores the weighted inputs for previous time-steps.
-    spikes: Vec<Array2<f32>>,
+    pub weighted_inputs: Vec<Array2<f32>>, // Stores the weighted inputs for previous time-steps.
+    pub spikes: Vec<Array2<f32>>,
 }
 impl Layer {
     /// - `size`: Number of neurons in the layer.
@@ -179,7 +175,11 @@ impl Layer {
         let spiked = self
             .membrane_potential
             .mapv(|m| (m > self.threshold_value) as u8 as f32);
+
+        println!("input: {:?}", input.as_slice().unwrap());
+        println!("weights: {:?}", weights.as_slice().unwrap());
         let weighted_inputs = input.dot(weights);
+        println!("weighted_inputs: {:?}", weighted_inputs.as_slice().unwrap());
         self.membrane_potential = &weighted_inputs + self.decay_value * &self.membrane_potential;
 
         // Store weighted inputs for backprop.
