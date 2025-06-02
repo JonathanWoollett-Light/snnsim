@@ -1,9 +1,11 @@
 # snnsim
 
 
+## Example
+
 Example run
 
-```
+```text
 PS C:\Users\Jonathan\Documents\snnsim> cargo test xor
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
      Running unittests src\lib.rs (target\debug\deps\snnsim-e72de92ac403bfd0.exe)
@@ -37,3 +39,34 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
 error: test failed, to rerun pass `--test xor`
 PS C:\Users\Jonathan\Documents\snnsim>
 ```
+
+## TODOs
+
+Neurons|Implemented
+---|---
+Leaky Integrate and Fire (LIF)|✓
+Adaptive LIF|x
+Resonate and fire|x
+Quadratic LIF|x
+Izhikevich|x
+Hodgkin-Huxley|x
+Sigma Delta (SDNN)|x
+
+Optimizers|Implemented
+---|---
+Backpropagation through time (BPTT)|✓
+SpikeProp|x
+SuperSpike|x
+SLAYER|x
+EventProp|x
+Spike Timing Dependant Plasticity (STDP)|x
+
+### Misc
+
+- should `backward` take some cost rather than just the target spikes?
+- look at using for [cusparse](https://docs.nvidia.com/cuda/cusparse/) for sparse matrix operations. This might require more complex logic to check when it is worth using sparse matrix operations.
+- output the EFLOPs metrics for models to give an idea of their foundational performance.
+- run a test including sparsity in the cost function
+- look at [ml_genn](https://github.com/genn-team/ml_genn).
+- I went to a conferece and heard about "audoAdjoint" which is intended to be a version of automatic differentiation that works for event driven models and SNNs. Look into this.
+- paper from Matias Barandiaran and James Stovold on "Developmental Graph Cellular Automata Can Grow Reservoirs" and lookup info on plastic reservoirs and how these could be implemented/used.

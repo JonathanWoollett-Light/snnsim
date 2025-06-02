@@ -1,2 +1,0 @@
-- update `Network` and `Layer` to add another dimension to the membrane potentials and where else needed to support running multiple samples at the same time.
-- should `backward` take some cost rather than just the target spikes?
