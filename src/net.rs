@@ -64,7 +64,8 @@ impl Network {
     ///
     /// - `target_spikes`: `[time steps x samples x features]`
     pub fn backward(&mut self, target_spikes: &Array3<f32>) -> Vec<Array2<f32>> {
-        // This check should really also apply to all layers not just the output layer.
+        // This check should really also apply to all layers not just the output
+        // layer.
         assert_eq!(
             target_spikes.dim().0,
             self.layers.last().unwrap().spikes.len()

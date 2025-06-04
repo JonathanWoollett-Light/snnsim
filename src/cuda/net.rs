@@ -72,6 +72,23 @@ impl Network {
         self.time_step += 1;
         spikes
     }
+
+    /// Calculate weight updates.
+    pub fn backward(&mut self, target_spikes: &[CudaSlice<f32>]) -> Vec<CudaSlice<f32>> {
+        // This check should really also apply to all layers not just the output
+        // layer.
+        assert_eq!(target_spikes.len(),self.layers.last().unwrap().spikes.len());
+        
+        let mut delta_weights = self.weights.iter().map(|w|self.stream.alloc_zeros::<f32>(w.len()).unwrap()).collect::<Vec<_>>();
+        for (ti, targets) in target_spikes.iter().enumerate() {
+            let mut li = self.layers.len() - 1;
+
+            // Output layers.
+            let output_grad = todo!();
+            todo!();
+        }
+        todo!()
+    }
 }
 
 static FOREWORD_KERNEL: LazyLock<Ptx> = LazyLock::new(|| {

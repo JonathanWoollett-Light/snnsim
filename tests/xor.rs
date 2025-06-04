@@ -168,7 +168,11 @@ fn foreprop() {
         .collect();
 
     let inputs = array![[1f32, 1f32], [0f32, 0f32], [1f32, 0f32], [0f32, 1f32]];
+    let targets = array![[0f32], [0f32], [1f32], [1f32]];
+
     let rate_encoded_inputs = rate_coding(inputs, time_steps);
+    let rate_encoded_targets = rate_coding(targets, time_steps);
+
     let cpu_inputs = rate_encoded_inputs.clone();
     let gpu_inputs = rate_encoded_inputs
         .axis_iter(Axis(0))
@@ -179,6 +183,17 @@ fn foreprop() {
                 .unwrap()
         })
         .collect::<Vec<_>>();
+
+    let cpu_targets = rate_encoded_targets.clone();
+    let gpu_targets = rate_encoded_targets
+    .axis_iter(Axis(0))
+    .map(|axis| {
+        gpu_net
+            .stream
+            .memcpy_stod(&to_column_major_slice(axis))
+            .unwrap()
+    })
+    .collect::<Vec<_>>();
 
     for (time_step, (cpu_input, gpu_input)) in cpu_inputs
         .axis_iter(Axis(0))
@@ -194,6 +209,7 @@ fn foreprop() {
             )
             .unwrap()
         );
+        
         let cpu_spikes = cpu_net.forward(cpu_input.to_owned());
         let gpu_spikes = gpu_net.forward(gpu_input);
 
@@ -234,4 +250,7 @@ fn foreprop() {
             .unwrap()
         );
     }
+
+    cpu_net.backward(&cpu_targets);
+    gpu_net.backward(&gpu_targets);
 }
