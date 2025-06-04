@@ -234,6 +234,4 @@ fn foreprop() {
             .unwrap()
         );
     }
-
-    assert!(false);
 }

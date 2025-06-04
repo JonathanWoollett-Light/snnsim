@@ -199,6 +199,7 @@ impl Layer {
                 .unwrap()
         }
 
+        let n = self.neurons * self.batch_size;
         let mut builder = stream.launch_builder(foreprop_function(context));
         builder
             .arg(&mut self.membrane_potential)
@@ -206,10 +207,10 @@ impl Layer {
             .arg(&mut self.spikes[time_step])
             .arg(&self.threshold)
             .arg(&self.decay)
-            .arg(&self.neurons);
+            .arg(&n);
         unsafe {
             builder
-                .launch(LaunchConfig::for_num_elems(self.neurons as u32))
+                .launch(LaunchConfig::for_num_elems(n as u32))
                 .unwrap();
         }
         self.spikes[time_step].clone()
