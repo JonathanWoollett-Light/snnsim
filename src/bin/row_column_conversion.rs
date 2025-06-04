@@ -2,7 +2,7 @@
 //! to make the maths work out.
 
 use cudarc::cublas::Gemm;
-use ndarray::{Array2, Axis};
+use ndarray::Array2;
 
 fn main() {
     let a_ndarray =
@@ -21,32 +21,16 @@ fn main() {
     let cublas = cudarc::cublas::CudaBlas::new(stream.clone()).unwrap();
 
     // Convert from ndarray row-major to cuda column-major
-    let a_column_major = a_ndarray
-        .columns()
-        .into_iter()
-        .fold(Array2::zeros([0, a_ndarray.nrows()]), |mut x, y| {
-            x.append(Axis(0), y.insert_axis(Axis(0))).unwrap();
-            x
-        })
-        .into_raw_vec_and_offset()
-        .0;
-    let b_column_major = b_ndarray
-        .columns()
-        .into_iter()
-        .fold(Array2::zeros([0, b_ndarray.nrows()]), |mut x, y| {
-            x.append(Axis(0), y.insert_axis(Axis(0))).unwrap();
-            x
-        })
-        .into_raw_vec_and_offset()
-        .0;
+    let a_column_major = snnsim::to_column_major_slice(a_ndarray.view());
+    let b_column_major = snnsim::to_column_major_slice(b_ndarray.view());
 
     let a_cuda = stream.memcpy_stod(&a_column_major).unwrap();
     let b_cuda = stream.memcpy_stod(&b_column_major).unwrap();
     let mut c_cuda = stream.alloc_zeros::<f32>(c_ndarray.len()).unwrap();
 
-    let m = a_ndarray.nrows() as i32; // or c.nrows()
-    let n = b_ndarray.ncols() as i32; // or c.ncols()
-    let k = a_ndarray.ncols() as i32; // or b.nrows()
+    let m = a_ndarray.nrows() as i32; // or c.nrows() or batch size
+    let n = b_ndarray.ncols() as i32; // or c.ncols() or neurons
+    let k = a_ndarray.ncols() as i32; // or b.nrows() or input size
     unsafe {
         cublas
             .gemm(
@@ -71,8 +55,7 @@ fn main() {
     let d_cuda = stream.memcpy_dtov(&c_cuda).unwrap();
 
     // Convert cuda array back to row-major ndarray.
-    let e_cuda = Array2::from_shape_fn([c_ndarray.nrows(), c_ndarray.ncols()], |(row, column)| {
-        d_cuda[column * c_ndarray.nrows() + row]
-    });
+    let e_cuda =
+        snnsim::from_column_major_slice(c_ndarray.nrows(), c_ndarray.ncols(), &d_cuda).unwrap();
     assert_eq!(c_ndarray, e_cuda);
 }

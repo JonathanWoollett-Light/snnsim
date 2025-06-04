@@ -57,6 +57,7 @@ impl Network {
             stream,
         }
     }
+    /// `spikes` needs to be in column-major format.
     pub fn forward(&mut self, mut spikes: CudaSlice<f32>) -> CudaSlice<f32> {
         self.inputs.push(spikes.clone());
         for (layer, weights) in self.layers.iter_mut().zip(self.weights.iter()) {
@@ -148,7 +149,7 @@ impl Layer {
                 .map(|_| stream.alloc_zeros::<f32>(neurons * batch_size).unwrap())
                 .collect(),
             spikes: (0..time_steps)
-                .map(|_| stream.alloc_zeros::<f32>(neurons).unwrap())
+                .map(|_| stream.alloc_zeros::<f32>(neurons * batch_size).unwrap())
                 .collect(),
             batch_size,
             input_features,
@@ -157,6 +158,7 @@ impl Layer {
             decay,
         }
     }
+    /// `input` and `weights` need to be in column-major format.
     pub fn forward(
         &mut self,
         input: CudaSlice<f32>,
@@ -165,8 +167,9 @@ impl Layer {
         context: Arc<CudaContext>,
         stream: Arc<CudaStream>,
     ) -> CudaSlice<f32> {
-        println!("input: {:?}", stream.memcpy_dtov(&input).unwrap());
-        println!("weights: {:?}", stream.memcpy_dtov(weights).unwrap());
+        let m = self.batch_size as i32;
+        let n = self.neurons as i32;
+        let k = self.input_features as i32;
 
         // TODO It would be better to store everything column major to avoid
         // needing the transposes here.
@@ -178,16 +181,16 @@ impl Layer {
             self.cublas
                 .gemm(
                     GemmConfig {
-                        transa: cublasOperation_t::CUBLAS_OP_T,
-                        transb: cublasOperation_t::CUBLAS_OP_T,
-                        m: self.batch_size as i32,
-                        n: self.neurons as i32,
-                        k: self.input_features as i32,
+                        transa: cublasOperation_t::CUBLAS_OP_N,
+                        transb: cublasOperation_t::CUBLAS_OP_N,
+                        m,
+                        n,
+                        k,
                         alpha: 1f32,
-                        lda: self.batch_size as i32,
-                        ldb: self.input_features as i32,
+                        lda: m,
+                        ldb: k,
                         beta: 0f32,
-                        ldc: self.batch_size as i32,
+                        ldc: m,
                     },
                     &input,
                     weights,
@@ -195,12 +198,6 @@ impl Layer {
                 )
                 .unwrap()
         }
-        println!(
-            "weighted_inputs: {:?}",
-            stream
-                .memcpy_dtov(&self.weighted_inputs[time_step])
-                .unwrap()
-        );
 
         let mut builder = stream.launch_builder(foreprop_function(context));
         builder

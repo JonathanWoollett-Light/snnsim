@@ -176,10 +176,7 @@ impl Layer {
             .membrane_potential
             .mapv(|m| (m > self.threshold_value) as u8 as f32);
 
-        println!("input: {:?}", input.as_slice().unwrap());
-        println!("weights: {:?}", weights.as_slice().unwrap());
         let weighted_inputs = input.dot(weights);
-        println!("weighted_inputs: {:?}", weighted_inputs.as_slice().unwrap());
         self.membrane_potential = &weighted_inputs + self.decay_value * &self.membrane_potential;
 
         // Store weighted inputs for backprop.

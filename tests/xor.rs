@@ -9,6 +9,7 @@ use ndarray::array;
 use ndarray_rand::rand_distr::{self};
 use snnsim::encode::rate_coding;
 use snnsim::net::Network;
+use snnsim::{from_column_major_slice, to_column_major_slice};
 
 // It seems like when training an SNN to do a digital task. It seems effectively
 // very difficult to train the network to train the network to do this task
@@ -127,111 +128,112 @@ fn xor_cpu() {
     assert!(false);
 }
 
+// TODO `xor_cpu_foreprop` and `xor_cuda_foreprop` should be the same test which
+// tests the CPU and CUDA versions both work and give the same values.
 #[test]
-fn xor_cpu_foreprop() {
+fn foreprop() {
     let batch_size = 4;
-    let time_steps = 2;
+    let time_steps = 3;
     let output_spikes = 1;
+    let weights = vec![
+        array![[2f32, 0.21f32, 0f32], [0f32, 0.21f32, 2f32]],
+        array![[1f32], [-5f32], [1f32]],
+    ];
 
-    // 2->3->1
-    let mut net = Network::new(
+    // Setup CPU network
+    let mut cpu_net = Network::new(
         2,
         &[3, output_spikes],
         rand_distr::StandardNormal,
         batch_size,
     );
-    net.weights = vec![
-        array![[2f32, 0.21f32, 0f32], [0f32, 0.21f32, 2f32]],
-        array![[1f32], [-5f32], [1f32]],
-    ];
+    cpu_net.weights = weights.clone();
 
-    let inputs = array![[1f32, 1f32], [0f32, 0f32], [1f32, 0f32], [0f32, 1f32]];
-    let rate_encoded_inputs = rate_coding(inputs, time_steps);
-
-    for time_step_inputs in rate_encoded_inputs.axis_iter(Axis(0)) {
-        println!("bruh: {:?}", time_step_inputs.nrows());
-        println!("in: {:?}", time_step_inputs.as_slice().unwrap());
-        let time_step_spikes = net.forward(time_step_inputs.to_owned());
-        println!("out: {:?}", time_step_spikes.as_slice().unwrap());
-    }
-
-    for layer in net.layers {
-        for time_step in 0..time_steps {
-            let a = &layer.weighted_inputs[time_step];
-            let b = layer.weighted_inputs[time_step].as_slice().unwrap();
-            println!(
-                "weighted_inputs[{time_step}]: ({})({}, {}) {b:?}",
-                b.len(),
-                a.nrows(),
-                a.ncols()
-            );
-        }
-        println!(
-            "membrane_potential: {:?}",
-            layer.membrane_potential.as_slice().unwrap()
-        );
-    }
-    assert!(false);
-}
-
-#[test]
-fn xor_cuda_foreprop() {
-    let batch_size = 4;
-    let time_steps = 2;
-    let output_spikes = 1;
-
-    // 2->3->1
-    let mut net = snnsim::cuda::net::Network::new(
+    // Setup GPU network
+    let mut gpu_net = snnsim::cuda::net::Network::new(
         2,
         &[3, output_spikes],
         rand_distr::StandardNormal,
         batch_size,
         time_steps,
     );
-    net.weights = vec![
-        net.stream
-            .memcpy_stod(
-                array![[2f32, 0.21f32, 0f32], [0f32, 0.21f32, 2f32]]
-                    .as_slice()
-                    .unwrap(),
-            )
-            .unwrap(),
-        net.stream
-            .memcpy_stod(array![[1f32], [-5f32], [1f32]].as_slice().unwrap())
-            .unwrap(),
-    ];
+    gpu_net.weights = weights
+        .iter()
+        .map(|w| {
+            gpu_net
+                .stream
+                .memcpy_stod(&to_column_major_slice(w.view()))
+                .unwrap()
+        })
+        .collect();
 
     let inputs = array![[1f32, 1f32], [0f32, 0f32], [1f32, 0f32], [0f32, 1f32]];
     let rate_encoded_inputs = rate_coding(inputs, time_steps);
-    let rate_encoded_inputs = rate_encoded_inputs
+    let cpu_inputs = rate_encoded_inputs.clone();
+    let gpu_inputs = rate_encoded_inputs
         .axis_iter(Axis(0))
-        .map(|axis| net.stream.memcpy_stod(axis.as_slice().unwrap()).unwrap())
+        .map(|axis| {
+            gpu_net
+                .stream
+                .memcpy_stod(&to_column_major_slice(axis))
+                .unwrap()
+        })
         .collect::<Vec<_>>();
 
-    for time_step_inputs in rate_encoded_inputs {
-        println!(
-            "in: {:?}",
-            net.stream.memcpy_dtov(&time_step_inputs).unwrap()
+    for (time_step, (cpu_input, gpu_input)) in cpu_inputs
+        .axis_iter(Axis(0))
+        .zip(gpu_inputs.into_iter())
+        .enumerate()
+    {
+        assert_eq!(
+            cpu_input,
+            from_column_major_slice(
+                cpu_input.nrows(),
+                cpu_input.ncols(),
+                &gpu_net.stream.memcpy_dtov(&gpu_input).unwrap()
+            )
+            .unwrap()
         );
-        let time_step_spikes = net.forward(time_step_inputs.to_owned());
-        println!(
-            "out: {:?}",
-            net.stream.memcpy_dtov(&time_step_spikes).unwrap()
+        let cpu_spikes = cpu_net.forward(cpu_input.to_owned());
+        let gpu_spikes = gpu_net.forward(gpu_input);
+
+        for (cpu_layer, gpu_layer) in cpu_net.layers.iter().zip(gpu_net.layers.iter()) {
+            let cpuw = &cpu_layer.weighted_inputs[time_step];
+            assert_eq!(
+                cpuw,
+                from_column_major_slice(
+                    cpuw.nrows(),
+                    cpuw.ncols(),
+                    &gpu_net
+                        .stream
+                        .memcpy_dtov(&gpu_layer.weighted_inputs[time_step])
+                        .unwrap()
+                )
+                .unwrap()
+            );
+            assert_eq!(
+                cpu_layer.membrane_potential,
+                from_column_major_slice(
+                    cpu_layer.membrane_potential.nrows(),
+                    cpu_layer.membrane_potential.ncols(),
+                    &gpu_net
+                        .stream
+                        .memcpy_dtov(&gpu_layer.membrane_potential)
+                        .unwrap()
+                )
+                .unwrap()
+            );
+        }
+        assert_eq!(
+            cpu_spikes,
+            from_column_major_slice(
+                cpu_spikes.nrows(),
+                cpu_spikes.ncols(),
+                &gpu_net.stream.memcpy_dtov(&gpu_spikes).unwrap()
+            )
+            .unwrap()
         );
     }
 
-    for layer in net.layers {
-        for time_step in 0..time_steps {
-            let s = net
-                .stream
-                .memcpy_dtov(&layer.weighted_inputs[time_step])
-                .unwrap();
-            println!("weighted_inputs[{time_step}]: ({}) {s:?}", s.len());
-        }
-        println!(
-            "membrane_potential: {:?}",
-            net.stream.memcpy_dtov(&layer.membrane_potential).unwrap()
-        );
-    }
     assert!(false);
 }
