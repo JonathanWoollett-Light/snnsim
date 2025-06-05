@@ -7,9 +7,9 @@ use ndarray::Array3;
 use ndarray::Axis;
 use ndarray::array;
 use ndarray_rand::rand_distr::{self};
+use snnsim::cuda::CudaMatrix;
 use snnsim::encode::rate_coding;
 use snnsim::net::Network;
-use snnsim::{from_column_major_slice, to_column_major_slice};
 
 // It seems like when training an SNN to do a digital task. It seems effectively
 // very difficult to train the network to train the network to do this task
@@ -159,12 +159,7 @@ fn foreprop() {
     );
     gpu_net.weights = weights
         .iter()
-        .map(|w| {
-            gpu_net
-                .stream
-                .memcpy_stod(&to_column_major_slice(w.view()))
-                .unwrap()
-        })
+        .map(|w| CudaMatrix::from_ndarray(gpu_net.stream.clone(), w.view()))
         .collect();
 
     let inputs = array![[1f32, 1f32], [0f32, 0f32], [1f32, 0f32], [0f32, 1f32]];
@@ -176,40 +171,22 @@ fn foreprop() {
     let cpu_inputs = rate_encoded_inputs.clone();
     let gpu_inputs = rate_encoded_inputs
         .axis_iter(Axis(0))
-        .map(|axis| {
-            gpu_net
-                .stream
-                .memcpy_stod(&to_column_major_slice(axis))
-                .unwrap()
-        })
+        .map(|axis| CudaMatrix::from_ndarray(gpu_net.stream.clone(), axis))
         .collect::<Vec<_>>();
 
     let cpu_targets = rate_encoded_targets.clone();
     let gpu_targets = rate_encoded_targets
-    .axis_iter(Axis(0))
-    .map(|axis| {
-        gpu_net
-            .stream
-            .memcpy_stod(&to_column_major_slice(axis))
-            .unwrap()
-    })
-    .collect::<Vec<_>>();
+        .axis_iter(Axis(0))
+        .map(|axis| CudaMatrix::from_ndarray(gpu_net.stream.clone(), axis))
+        .collect::<Vec<_>>();
 
     for (time_step, (cpu_input, gpu_input)) in cpu_inputs
         .axis_iter(Axis(0))
         .zip(gpu_inputs.into_iter())
         .enumerate()
     {
-        assert_eq!(
-            cpu_input,
-            from_column_major_slice(
-                cpu_input.nrows(),
-                cpu_input.ncols(),
-                &gpu_net.stream.memcpy_dtov(&gpu_input).unwrap()
-            )
-            .unwrap()
-        );
-        
+        assert_eq!(cpu_input, gpu_input.to_ndarray(gpu_net.stream.clone()));
+
         let cpu_spikes = cpu_net.forward(cpu_input.to_owned());
         let gpu_spikes = gpu_net.forward(gpu_input);
 
@@ -217,38 +194,16 @@ fn foreprop() {
             let cpuw = &cpu_layer.weighted_inputs[time_step];
             assert_eq!(
                 cpuw,
-                from_column_major_slice(
-                    cpuw.nrows(),
-                    cpuw.ncols(),
-                    &gpu_net
-                        .stream
-                        .memcpy_dtov(&gpu_layer.weighted_inputs[time_step])
-                        .unwrap()
-                )
-                .unwrap()
+                gpu_layer.weighted_inputs[time_step].to_ndarray(gpu_net.stream.clone())
             );
             assert_eq!(
                 cpu_layer.membrane_potential,
-                from_column_major_slice(
-                    cpu_layer.membrane_potential.nrows(),
-                    cpu_layer.membrane_potential.ncols(),
-                    &gpu_net
-                        .stream
-                        .memcpy_dtov(&gpu_layer.membrane_potential)
-                        .unwrap()
-                )
-                .unwrap()
+                gpu_layer
+                    .membrane_potential
+                    .to_ndarray(gpu_net.stream.clone())
             );
         }
-        assert_eq!(
-            cpu_spikes,
-            from_column_major_slice(
-                cpu_spikes.nrows(),
-                cpu_spikes.ncols(),
-                &gpu_net.stream.memcpy_dtov(&gpu_spikes).unwrap()
-            )
-            .unwrap()
-        );
+        assert_eq!(cpu_spikes, gpu_spikes.to_ndarray(gpu_net.stream.clone()));
     }
 
     cpu_net.backward(&cpu_targets);

@@ -8,10 +8,13 @@ use cudarc::{
 };
 use ndarray_rand::RandomExt;
 
+use crate::cuda::{CudaMatrix, kernels};
+use crate::to_column_major_slice;
+
 pub struct Network {
-    pub weights: Vec<CudaSlice<f32>>,
+    pub weights: Vec<CudaMatrix>,
     pub layers: Vec<Layer>,
-    pub inputs: Vec<CudaSlice<f32>>,
+    pub inputs: Vec<CudaMatrix>,
     pub time_step: usize,
     pub context: Arc<CudaContext>,
     pub stream: Arc<CudaStream>,
@@ -34,7 +37,7 @@ impl Network {
             .map(|(a, b)| {
                 let weights = ndarray::Array::random((a, b), &weight_distribution);
                 (
-                    stream.memcpy_stod(weights.as_slice().unwrap()).unwrap(),
+                    CudaMatrix::from_ndarray(stream.clone(), weights),
                     Layer::new(
                         crate::DEFAULT_DECAY,
                         crate::DEFAULT_THRESHOLD,
@@ -58,7 +61,7 @@ impl Network {
         }
     }
     /// `spikes` needs to be in column-major format.
-    pub fn forward(&mut self, mut spikes: CudaSlice<f32>) -> CudaSlice<f32> {
+    pub fn forward(&mut self, mut spikes: CudaMatrix) -> CudaMatrix {
         self.inputs.push(spikes.clone());
         for (layer, weights) in self.layers.iter_mut().zip(self.weights.iter()) {
             spikes = layer.forward(
@@ -74,78 +77,99 @@ impl Network {
     }
 
     /// Calculate weight updates.
-    pub fn backward(&mut self, target_spikes: &[CudaSlice<f32>]) -> Vec<CudaSlice<f32>> {
+    pub fn backward(&mut self, target_spikes: &[CudaMatrix]) -> Vec<CudaMatrix> {
         // This check should really also apply to all layers not just the output
         // layer.
-        assert_eq!(target_spikes.len(),self.layers.last().unwrap().spikes.len());
-        
-        let mut delta_weights = self.weights.iter().map(|w|self.stream.alloc_zeros::<f32>(w.len()).unwrap()).collect::<Vec<_>>();
+        assert_eq!(
+            target_spikes.len(),
+            self.layers.last().unwrap().spikes.len()
+        );
+
+        let mut delta_weights = self
+            .weights
+            .iter()
+            .map(|w| CudaMatrix::zeros(self.stream.clone(), w.rows, w.columns))
+            .collect::<Vec<_>>();
         for (ti, targets) in target_spikes.iter().enumerate() {
             let mut li = self.layers.len() - 1;
 
             // Output layers.
-            let output_grad = todo!();
-            todo!();
+            kernels::surrogate::run_function(
+                &mut self.layers[li],
+                self.context.clone(),
+                self.stream.clone(),
+                ti,
+            );
+            kernels::output_error::run_function(
+                &mut self.layers[li],
+                self.context.clone(),
+                self.stream.clone(),
+                ti,
+                targets,
+            );
+            let output_previous_spikes = &self.layers[li - 1].spikes[ti];
+            crate::cuda::matmul(
+                &self.layers[li].cublas,
+                output_previous_spikes,
+                &self.layers[li].errors,
+                &mut delta_weights[ti],
+                true,
+                false,
+            );
+            let mut delta_next = self.layers[li].errors.clone();
+            li -= 1;
+
+            // Hidden layers
+            while li > 0 {
+                let layer = &mut self.layers[li];
+                kernels::surrogate::run_function(
+                    layer,
+                    self.context.clone(),
+                    self.stream.clone(),
+                    ti,
+                );
+                crate::cuda::matmul(
+                    &layer.cublas,
+                    &delta_next,
+                    &self.weights[li + 1],
+                    &mut layer.errors,
+                    false,
+                    true,
+                );
+                todo!("multiply layer.errors *= layer.gradients");
+                let previous_spikes = &self.layers[li - 1].spikes[ti];
+                crate::cuda::matmul(
+                    &layer.cublas,
+                    &previous_spikes,
+                    &layer.errors,
+                    &mut delta_weights[li],
+                    true,
+                    false,
+                );
+                delta_next = layer.errors;
+                li -= 1;
+            }
+            todo!("do input layer backprop");
         }
-        todo!()
+        todo!(
+            "divide all delta weights by scalar of total number of target spikes, then return delta weights"
+        )
     }
-}
-
-static FOREWORD_KERNEL: LazyLock<Ptx> = LazyLock::new(|| {
-    compile_ptx(
-        r#"
-extern "C" __global__ void snn_forward_kernel(
-    float* membrane_potential,
-    const float* weighted_inputs,
-    float* spiked_output,
-    float threshold,
-    float decay,
-    size_t numel
-) {
-    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < numel) {
-        // Spike calculation
-        float spiked = (membrane_potential[i] > threshold) ? 1.0f : 0.0f;
-        spiked_output[i] = spiked;
-
-        // Membrane potential update
-        float new_potential = weighted_inputs[i] + 
-                            decay * membrane_potential[i] - 
-                            decay * spiked * threshold;
-        
-        membrane_potential[i] = new_potential;
-    }
-}"#,
-    )
-    .unwrap()
-});
-
-static FOREPROP_MODULE: OnceLock<Arc<CudaModule>> = OnceLock::new();
-static FOREPROP_FUNCTION: OnceLock<CudaFunction> = OnceLock::new();
-
-fn foreprop_module(context: Arc<CudaContext>) -> Arc<CudaModule> {
-    FOREPROP_MODULE
-        .get_or_init(|| context.load_module((*FOREWORD_KERNEL).clone()).unwrap())
-        .clone()
-}
-fn foreprop_function<'a>(context: Arc<CudaContext>) -> &'a CudaFunction {
-    FOREPROP_FUNCTION.get_or_init(|| {
-        foreprop_module(context)
-            .load_function("snn_forward_kernel")
-            .unwrap()
-    })
 }
 
 pub struct Layer {
     pub cublas: Arc<CudaBlas>,
-    pub membrane_potential: CudaSlice<f32>,
-    pub weighted_inputs: Vec<CudaSlice<f32>>,
-    pub spikes: Vec<CudaSlice<f32>>,
+    pub membrane_potential: CudaMatrix,
+    pub weighted_inputs: Vec<CudaMatrix>,
+    pub spikes: Vec<CudaMatrix>,
     pub batch_size: usize,
     pub input_features: usize,
     pub neurons: usize,
     pub threshold: f32,
     pub decay: f32,
+    // Backprop stuff
+    pub gradients: CudaMatrix,
+    pub errors: CudaMatrix,
 }
 impl Layer {
     pub fn new(
@@ -161,75 +185,44 @@ impl Layer {
     ) -> Layer {
         Layer {
             cublas,
-            membrane_potential: stream.alloc_zeros::<f32>(neurons * batch_size).unwrap(),
+            membrane_potential: CudaMatrix::zeros(stream.clone(), batch_size, neurons),
             weighted_inputs: (0..time_steps)
-                .map(|_| stream.alloc_zeros::<f32>(neurons * batch_size).unwrap())
+                .map(|_| CudaMatrix::zeros(stream.clone(), batch_size, neurons))
                 .collect(),
             spikes: (0..time_steps)
-                .map(|_| stream.alloc_zeros::<f32>(neurons * batch_size).unwrap())
+                .map(|_| CudaMatrix::zeros(stream.clone(), batch_size, neurons))
                 .collect(),
             batch_size,
             input_features,
             neurons,
             threshold,
             decay,
+            gradients: CudaMatrix::zeros(stream.clone(), batch_size, neurons),
+            errors: CudaMatrix::zeros(stream.clone(), batch_size, neurons),
         }
     }
     /// `input` and `weights` need to be in column-major format.
     pub fn forward(
         &mut self,
-        input: CudaSlice<f32>,
-        weights: &CudaSlice<f32>,
+        input: CudaMatrix,
+        weights: &CudaMatrix,
         time_step: usize,
         context: Arc<CudaContext>,
         stream: Arc<CudaStream>,
-    ) -> CudaSlice<f32> {
-        let m = self.batch_size as i32;
-        let n = self.neurons as i32;
-        let k = self.input_features as i32;
-
-        // TODO It would be better to store everything column major to avoid
-        // needing the transposes here.
+    ) -> CudaMatrix {
         // TODO This does quite a bit of redundant work, would it be more
         // efficient to write a custom kernel that just does the matrix
         // multiplication?
         // Calculate weighted input for this time-step.
-        unsafe {
-            self.cublas
-                .gemm(
-                    GemmConfig {
-                        transa: cublasOperation_t::CUBLAS_OP_N,
-                        transb: cublasOperation_t::CUBLAS_OP_N,
-                        m,
-                        n,
-                        k,
-                        alpha: 1f32,
-                        lda: m,
-                        ldb: k,
-                        beta: 0f32,
-                        ldc: m,
-                    },
-                    &input,
-                    weights,
-                    &mut self.weighted_inputs[time_step],
-                )
-                .unwrap()
-        }
-
-        let n = self.neurons * self.batch_size;
-        let mut builder = stream.launch_builder(foreprop_function(context));
-        builder
-            .arg(&mut self.membrane_potential)
-            .arg(&self.weighted_inputs[time_step])
-            .arg(&mut self.spikes[time_step])
-            .arg(&self.threshold)
-            .arg(&self.decay)
-            .arg(&n);
-        unsafe {
-            builder
-                .launch(LaunchConfig::for_num_elems(n as u32))
-                .unwrap();
-        }
+        crate::cuda::matmul(
+            &self.cublas,
+            &input,
+            weights,
+            &mut self.weighted_inputs[time_step],
+            false,
+            false,
+        );
+        kernels::foreprop::run_function(self, context, stream, time_step);
         self.spikes[time_step].clone()
     }
 }
