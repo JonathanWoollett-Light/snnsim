@@ -59,6 +59,18 @@ pub fn matmul(
     trans_a: bool,
     trans_b: bool,
 ) {
+    gemm(cublas, a, b, c, trans_a, trans_b, 0f32)
+}
+
+pub fn gemm(
+    cublas: &CudaBlas,
+    a: &CudaMatrix,
+    b: &CudaMatrix,
+    c: &mut CudaMatrix,
+    trans_a: bool,
+    trans_b: bool,
+    beta: f32,
+) {
     let m = a.rows as i32; // or c.rows
     let n = b.columns as i32; // or c.columns
     let k = a.columns as i32; // or b.rows
@@ -82,7 +94,7 @@ pub fn matmul(
                     alpha: 1f32,
                     lda: m,
                     ldb: k,
-                    beta: 0f32,
+                    beta,
                     ldc: m,
                 },
                 &a.slice,

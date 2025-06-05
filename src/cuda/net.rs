@@ -1,15 +1,12 @@
-use std::sync::{Arc, LazyLock, OnceLock};
+use std::sync::Arc;
 
-use cudarc::driver::PushKernelArg;
 use cudarc::{
-    cublas::{CudaBlas, Gemm, GemmConfig, sys::cublasOperation_t},
-    driver::{CudaContext, CudaFunction, CudaModule, CudaSlice, CudaStream, LaunchConfig},
-    nvrtc::{Ptx, compile_ptx},
+    cublas::CudaBlas,
+    driver::{CudaContext, CudaStream},
 };
 use ndarray_rand::RandomExt;
 
 use crate::cuda::{CudaMatrix, kernels};
-use crate::to_column_major_slice;
 
 pub struct Network {
     pub weights: Vec<CudaMatrix>,
@@ -93,7 +90,7 @@ impl Network {
         for (ti, targets) in target_spikes.iter().enumerate() {
             let mut li = self.layers.len() - 1;
 
-            // Output layers.
+            // Output layer.
             kernels::surrogate::run_function(
                 &mut self.layers[li],
                 self.context.clone(),
@@ -108,13 +105,14 @@ impl Network {
                 targets,
             );
             let output_previous_spikes = &self.layers[li - 1].spikes[ti];
-            crate::cuda::matmul(
+            crate::cuda::gemm(
                 &self.layers[li].cublas,
                 output_previous_spikes,
                 &self.layers[li].errors,
-                &mut delta_weights[ti],
+                &mut delta_weights[li],
                 true,
                 false,
+                1f32,
             );
             let mut delta_next = self.layers[li].errors.clone();
             li -= 1;
@@ -136,24 +134,66 @@ impl Network {
                     false,
                     true,
                 );
-                todo!("multiply layer.errors *= layer.gradients");
+                kernels::hadamard::run_function(
+                    &mut layer.errors,
+                    &layer.gradients,
+                    self.context.clone(),
+                    self.stream.clone(),
+                );
                 let previous_spikes = &self.layers[li - 1].spikes[ti];
-                crate::cuda::matmul(
-                    &layer.cublas,
-                    &previous_spikes,
-                    &layer.errors,
+                crate::cuda::gemm(
+                    &self.layers[li].cublas,
+                    previous_spikes,
+                    &self.layers[li].errors,
                     &mut delta_weights[li],
                     true,
                     false,
+                    1f32,
                 );
-                delta_next = layer.errors;
+                delta_next = self.layers[li].errors.clone();
                 li -= 1;
             }
-            todo!("do input layer backprop");
+
+            // Input layer
+            let layer = &mut self.layers[li];
+            kernels::surrogate::run_function(layer, self.context.clone(), self.stream.clone(), ti);
+            crate::cuda::matmul(
+                &layer.cublas,
+                &delta_next,
+                &self.weights[li + 1],
+                &mut layer.errors,
+                false,
+                true,
+            );
+            kernels::hadamard::run_function(
+                &mut layer.errors,
+                &layer.gradients,
+                self.context.clone(),
+                self.stream.clone(),
+            );
+            let previous_spikes = &self.inputs[ti];
+            crate::cuda::gemm(
+                &layer.cublas,
+                previous_spikes,
+                &layer.errors,
+                &mut delta_weights[li],
+                true,
+                false,
+                1f32,
+            );
         }
-        todo!(
-            "divide all delta weights by scalar of total number of target spikes, then return delta weights"
-        )
+
+        // Divide weight updates by time steps.
+        for delta_weights in delta_weights.iter_mut() {
+            kernels::div::run_function(
+                delta_weights,
+                target_spikes.len() as f32,
+                self.context.clone(),
+                self.stream.clone(),
+            );
+        }
+
+        delta_weights
     }
 }
 

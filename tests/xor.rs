@@ -206,6 +206,10 @@ fn foreprop() {
         assert_eq!(cpu_spikes, gpu_spikes.to_ndarray(gpu_net.stream.clone()));
     }
 
-    cpu_net.backward(&cpu_targets);
-    gpu_net.backward(&gpu_targets);
+    let cpu_errors = cpu_net.backward(&cpu_targets);
+    let gpu_errors = gpu_net.backward(&gpu_targets);
+    
+    for (cpu_error, gpu_error) in cpu_errors.into_iter().zip(gpu_errors.into_iter()) {
+        assert_eq!(cpu_error, gpu_error.to_ndarray(gpu_net.stream.clone()));
+    }
 }

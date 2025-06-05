@@ -83,7 +83,7 @@ impl Network {
         for (ti, targets) in target_spikes.axis_iter(Axis(0)).rev().enumerate() {
             let mut li = self.layers.len() - 1;
 
-            // Output layers.
+            // Output layer.
             let output_grad = surrogate_gradient(&self.layers[li].weighted_inputs[ti]);
             let output_error = (&self.layers[li].spikes[ti] - &targets) * output_grad;
             let output_previous_spikes = &self.layers[li - 1].spikes[ti];
