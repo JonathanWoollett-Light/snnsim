@@ -1,9 +1,7 @@
 use std::sync::{Arc, LazyLock, OnceLock};
 
 use cudarc::{
-    driver::{
-        CudaContext, CudaFunction, CudaModule, CudaStream, LaunchConfig, PushKernelArg,
-    },
+    driver::{CudaContext, CudaFunction, CudaModule, CudaStream, LaunchConfig, PushKernelArg},
     nvrtc::{Ptx, compile_ptx},
 };
 

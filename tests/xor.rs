@@ -7,6 +7,8 @@ use ndarray::Array3;
 use ndarray::Axis;
 use ndarray::array;
 use ndarray_rand::rand_distr::{self};
+use snnsim::PollingIterator;
+use snnsim::PollingResult;
 use snnsim::cuda::CudaMatrix;
 use snnsim::encode::rate_coding;
 use snnsim::net::Network;
@@ -104,7 +106,7 @@ fn xor_cpu() {
 
         // Calculate weight updates.
         let start = Instant::now();
-        let updates = net.backward(&rate_encoded_targets);
+        let updates = net.backward(&rate_encoded_targets).finish();
         backprop_time += start.elapsed();
 
         // Update weights.
@@ -206,9 +208,20 @@ fn foreprop() {
         assert_eq!(cpu_spikes, gpu_spikes.to_ndarray(gpu_net.stream.clone()));
     }
 
-    let cpu_errors = cpu_net.backward(&cpu_targets);
-    let gpu_errors = gpu_net.backward(&gpu_targets);
-    
+    let cpu_back_iter = cpu_net.backward(&cpu_targets);
+    let gpu_back_iter = gpu_net.backward(&gpu_targets);
+    let mut back_iter = cpu_back_iter.zip(gpu_back_iter);
+
+    let (cpu_errors, gpu_errors) = loop {
+        back_iter = match back_iter.next() {
+            PollingResult::Complete((x, y)) => break (x, y),
+            PollingResult::Incomplete(x) => {
+                println!("todo check backprop values here");
+                x
+            }
+        };
+    };
+
     for (cpu_error, gpu_error) in cpu_errors.into_iter().zip(gpu_errors.into_iter()) {
         assert_eq!(cpu_error, gpu_error.to_ndarray(gpu_net.stream.clone()));
     }

@@ -5,8 +5,12 @@ use cudarc::{
     driver::{CudaContext, CudaStream},
 };
 use ndarray_rand::RandomExt;
+use std::iter;
 
-use crate::cuda::{CudaMatrix, kernels};
+use crate::{
+    PollingIterator, PollingResult,
+    cuda::{CudaMatrix, kernels},
+};
 
 pub struct Network {
     pub weights: Vec<CudaMatrix>,
@@ -74,7 +78,10 @@ impl Network {
     }
 
     /// Calculate weight updates.
-    pub fn backward(&mut self, target_spikes: &[CudaMatrix]) -> Vec<CudaMatrix> {
+    pub fn backward<'a, 'b>(
+        &'a mut self,
+        target_spikes: &'b [CudaMatrix],
+    ) -> BackwardIterator<'a, 'b> {
         // This check should really also apply to all layers not just the output
         // layer.
         assert_eq!(
@@ -82,118 +89,18 @@ impl Network {
             self.layers.last().unwrap().spikes.len()
         );
 
-        let mut delta_weights = self
+        let delta_weights = self
             .weights
             .iter()
             .map(|w| CudaMatrix::zeros(self.stream.clone(), w.rows, w.columns))
             .collect::<Vec<_>>();
-        for (ti, targets) in target_spikes.iter().enumerate() {
-            let mut li = self.layers.len() - 1;
 
-            // Output layer.
-            kernels::surrogate::run_function(
-                &mut self.layers[li],
-                self.context.clone(),
-                self.stream.clone(),
-                ti,
-            );
-            kernels::output_error::run_function(
-                &mut self.layers[li],
-                self.context.clone(),
-                self.stream.clone(),
-                ti,
-                targets,
-            );
-            let output_previous_spikes = &self.layers[li - 1].spikes[ti];
-            crate::cuda::gemm(
-                &self.layers[li].cublas,
-                output_previous_spikes,
-                &self.layers[li].errors,
-                &mut delta_weights[li],
-                true,
-                false,
-                1f32,
-            );
-            let mut delta_next = self.layers[li].errors.clone();
-            li -= 1;
-
-            // Hidden layers
-            while li > 0 {
-                let layer = &mut self.layers[li];
-                kernels::surrogate::run_function(
-                    layer,
-                    self.context.clone(),
-                    self.stream.clone(),
-                    ti,
-                );
-                crate::cuda::matmul(
-                    &layer.cublas,
-                    &delta_next,
-                    &self.weights[li + 1],
-                    &mut layer.errors,
-                    false,
-                    true,
-                );
-                kernels::hadamard::run_function(
-                    &mut layer.errors,
-                    &layer.gradients,
-                    self.context.clone(),
-                    self.stream.clone(),
-                );
-                let previous_spikes = &self.layers[li - 1].spikes[ti];
-                crate::cuda::gemm(
-                    &self.layers[li].cublas,
-                    previous_spikes,
-                    &self.layers[li].errors,
-                    &mut delta_weights[li],
-                    true,
-                    false,
-                    1f32,
-                );
-                delta_next = self.layers[li].errors.clone();
-                li -= 1;
-            }
-
-            // Input layer
-            let layer = &mut self.layers[li];
-            kernels::surrogate::run_function(layer, self.context.clone(), self.stream.clone(), ti);
-            crate::cuda::matmul(
-                &layer.cublas,
-                &delta_next,
-                &self.weights[li + 1],
-                &mut layer.errors,
-                false,
-                true,
-            );
-            kernels::hadamard::run_function(
-                &mut layer.errors,
-                &layer.gradients,
-                self.context.clone(),
-                self.stream.clone(),
-            );
-            let previous_spikes = &self.inputs[ti];
-            crate::cuda::gemm(
-                &layer.cublas,
-                previous_spikes,
-                &layer.errors,
-                &mut delta_weights[li],
-                true,
-                false,
-                1f32,
-            );
+        BackwardIterator {
+            net: self,
+            target_spikes,
+            delta_weights,
+            inner: target_spikes.iter().enumerate().rev(),
         }
-
-        // Divide weight updates by time steps.
-        for delta_weights in delta_weights.iter_mut() {
-            kernels::div::run_function(
-                delta_weights,
-                target_spikes.len() as f32,
-                self.context.clone(),
-                self.stream.clone(),
-            );
-        }
-
-        delta_weights
     }
 }
 
@@ -264,5 +171,132 @@ impl Layer {
         );
         kernels::foreprop::run_function(self, context, stream, time_step);
         self.spikes[time_step].clone()
+    }
+}
+
+pub struct BackwardIterator<'a, 'b> {
+    net: &'a mut Network,
+    target_spikes: &'b [CudaMatrix],
+    delta_weights: Vec<CudaMatrix>,
+    inner: iter::Rev<iter::Enumerate<std::slice::Iter<'b, CudaMatrix>>>,
+}
+impl<'a, 'b> PollingIterator for BackwardIterator<'a, 'b> {
+    type Item = Vec<CudaMatrix>;
+    fn next(mut self) -> PollingResult<Self, Self::Item> {
+        if let Some((ti, targets)) = self.inner.next() {
+            let mut li = self.net.layers.len() - 1;
+
+            // Output layer.
+            kernels::surrogate::run_function(
+                &mut self.net.layers[li],
+                self.net.context.clone(),
+                self.net.stream.clone(),
+                ti,
+            );
+            kernels::output_error::run_function(
+                &mut self.net.layers[li],
+                self.net.context.clone(),
+                self.net.stream.clone(),
+                ti,
+                targets,
+            );
+            let output_previous_spikes = &self.net.layers[li - 1].spikes[ti];
+            crate::cuda::gemm(
+                &self.net.layers[li].cublas,
+                output_previous_spikes,
+                &self.net.layers[li].errors,
+                &mut self.delta_weights[li],
+                true,
+                false,
+                1f32,
+            );
+            let mut delta_next = self.net.layers[li].errors.clone();
+            li -= 1;
+
+            // Hidden layers
+            while li > 0 {
+                let layer = &mut self.net.layers[li];
+                kernels::surrogate::run_function(
+                    layer,
+                    self.net.context.clone(),
+                    self.net.stream.clone(),
+                    ti,
+                );
+                crate::cuda::matmul(
+                    &layer.cublas,
+                    &delta_next,
+                    &self.net.weights[li + 1],
+                    &mut layer.errors,
+                    false,
+                    true,
+                );
+                kernels::hadamard::run_function(
+                    &mut layer.errors,
+                    &layer.gradients,
+                    self.net.context.clone(),
+                    self.net.stream.clone(),
+                );
+                let previous_spikes = &self.net.layers[li - 1].spikes[ti];
+                crate::cuda::gemm(
+                    &self.net.layers[li].cublas,
+                    previous_spikes,
+                    &self.net.layers[li].errors,
+                    &mut self.delta_weights[li],
+                    true,
+                    false,
+                    1f32,
+                );
+                delta_next = self.net.layers[li].errors.clone();
+                li -= 1;
+            }
+
+            // Input layer
+            let layer = &mut self.net.layers[li];
+            kernels::surrogate::run_function(
+                layer,
+                self.net.context.clone(),
+                self.net.stream.clone(),
+                ti,
+            );
+            crate::cuda::matmul(
+                &layer.cublas,
+                &delta_next,
+                &self.net.weights[li + 1],
+                &mut layer.errors,
+                false,
+                true,
+            );
+            kernels::hadamard::run_function(
+                &mut layer.errors,
+                &layer.gradients,
+                self.net.context.clone(),
+                self.net.stream.clone(),
+            );
+            let previous_spikes = &self.net.inputs[ti];
+            crate::cuda::gemm(
+                &layer.cublas,
+                previous_spikes,
+                &layer.errors,
+                &mut self.delta_weights[li],
+                true,
+                false,
+                1f32,
+            );
+
+            PollingResult::Incomplete(self)
+        } else {
+            // Divide weight updates by time steps.
+            for delta_weights in self.delta_weights.iter_mut() {
+                kernels::div::run_function(
+                    delta_weights,
+                    self.target_spikes.len() as f32,
+                    self.net.context.clone(),
+                    self.net.stream.clone(),
+                );
+            }
+
+            // Return weight updates.
+            PollingResult::Complete(self.delta_weights)
+        }
     }
 }

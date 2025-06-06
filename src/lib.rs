@@ -35,3 +35,54 @@ where
         x
     })
 }
+
+pub enum PollingResult<A, B> {
+    Incomplete(A),
+    Complete(B),
+}
+
+pub trait PollingIterator {
+    type Item;
+    fn next(self) -> PollingResult<Self, Self::Item>
+    where
+        Self: Sized;
+    fn zip<T: PollingIterator>(self, other: T) -> ZippedPollingIterator<Self, T>
+    where
+        Self: Sized,
+    {
+        ZippedPollingIterator { a: self, b: other }
+    }
+    fn finish(mut self) -> Self::Item
+    where
+        Self: Sized,
+    {
+        loop {
+            self = match self.next() {
+                PollingResult::Complete(x) => break x,
+                PollingResult::Incomplete(x) => x,
+            };
+        }
+    }
+}
+
+pub struct ZippedPollingIterator<A: PollingIterator, B: PollingIterator> {
+    a: A,
+    b: B,
+}
+impl<A: PollingIterator, B: PollingIterator> PollingIterator for ZippedPollingIterator<A, B> {
+    type Item = (<A as PollingIterator>::Item, <B as PollingIterator>::Item);
+    fn next(self) -> PollingResult<Self, Self::Item>
+    where
+        Self: Sized,
+    {
+        match (self.a.next(), self.b.next()) {
+            (PollingResult::Incomplete(a), PollingResult::Incomplete(b)) => {
+                PollingResult::Incomplete(Self { a, b })
+            }
+            (PollingResult::Complete(a), PollingResult::Complete(b)) => {
+                PollingResult::Complete((a, b))
+            }
+            _ => unreachable!(),
+        }
+    }
+}
