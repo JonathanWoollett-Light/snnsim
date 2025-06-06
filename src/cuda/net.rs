@@ -281,10 +281,11 @@ impl<'a, 'b> PollingIterator for BackwardIterator<'a, 'b> {
             PollingResult::Incomplete(self)
         } else {
             // Divide weight updates by time steps.
+            let n = self.target_spikes.iter().map(|t| t.len()).sum::<usize>() as f32;
             for delta_weights in self.delta_weights.iter_mut() {
                 kernels::div::run_function(
                     delta_weights,
-                    self.target_spikes.len() as f32,
+                    n,
                     self.net.context.clone(),
                     self.net.stream.clone(),
                 );
