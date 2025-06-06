@@ -170,9 +170,9 @@ use crate::{PollingIterator, PollingResult};
 use std::iter;
 
 pub struct BackwardIterator<'a, 'b> {
-    net: &'a mut Network,
+    pub net: &'a mut Network,
     target_spikes: &'b Array3<f32>,
-    delta_weights: Vec<Array2<f32>>,
+    pub delta_weights: Vec<Array2<f32>>,
     inner: iter::Rev<iter::Enumerate<ndarray::iter::AxisIter<'b, f32, ndarray::Dim<[usize; 2]>>>>,
 }
 impl<'a, 'b> PollingIterator for BackwardIterator<'a, 'b> {
@@ -187,6 +187,7 @@ impl<'a, 'b> PollingIterator for BackwardIterator<'a, 'b> {
             let output_previous_spikes = &self.net.layers[li - 1].spikes[ti];
             self.delta_weights[li] += &output_previous_spikes.t().dot(&output_error);
             let mut delta_next = output_error;
+            // println!("out delta: {:?}", self.delta_weights[li]);
             li -= 1;
 
             // Hidden layers.
@@ -204,6 +205,7 @@ impl<'a, 'b> PollingIterator for BackwardIterator<'a, 'b> {
             let error = delta_next.dot(&self.net.weights[li + 1].t()) * grad;
             let previous_spikes = &self.net.inputs[ti];
             self.delta_weights[li] += &previous_spikes.t().dot(&error);
+            // println!("in delta: {:?}", self.delta_weights[li]);
 
             PollingResult::Incomplete(self)
         } else {

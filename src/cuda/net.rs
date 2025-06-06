@@ -47,7 +47,6 @@ impl Network {
                         cublas.clone(),
                         stream.clone(),
                         time_steps,
-                        a,
                     ),
                 )
             })
@@ -105,16 +104,14 @@ impl Network {
 }
 
 pub struct Layer {
-    pub cublas: Arc<CudaBlas>,
+    // Same as cpu layer:
+    pub decay: f32,
+    pub threshold: f32,
     pub membrane_potential: CudaMatrix,
     pub weighted_inputs: Vec<CudaMatrix>,
     pub spikes: Vec<CudaMatrix>,
-    pub batch_size: usize,
-    pub input_features: usize,
-    pub neurons: usize,
-    pub threshold: f32,
-    pub decay: f32,
-    // Backprop stuff
+    // Different to cpu layer:
+    pub cublas: Arc<CudaBlas>,
     pub gradients: CudaMatrix,
     pub errors: CudaMatrix,
 }
@@ -128,7 +125,6 @@ impl Layer {
         cublas: Arc<CudaBlas>,
         stream: Arc<CudaStream>,
         time_steps: usize,
-        input_features: usize,
     ) -> Layer {
         Layer {
             cublas,
@@ -139,9 +135,6 @@ impl Layer {
             spikes: (0..time_steps)
                 .map(|_| CudaMatrix::zeros(stream.clone(), batch_size, neurons))
                 .collect(),
-            batch_size,
-            input_features,
-            neurons,
             threshold,
             decay,
             gradients: CudaMatrix::zeros(stream.clone(), batch_size, neurons),
@@ -175,9 +168,9 @@ impl Layer {
 }
 
 pub struct BackwardIterator<'a, 'b> {
-    net: &'a mut Network,
+    pub net: &'a mut Network,
     target_spikes: &'b [CudaMatrix],
-    delta_weights: Vec<CudaMatrix>,
+    pub delta_weights: Vec<CudaMatrix>,
     inner: iter::Rev<iter::Enumerate<std::slice::Iter<'b, CudaMatrix>>>,
 }
 impl<'a, 'b> PollingIterator for BackwardIterator<'a, 'b> {
@@ -211,6 +204,7 @@ impl<'a, 'b> PollingIterator for BackwardIterator<'a, 'b> {
                 1f32,
             );
             let mut delta_next = self.net.layers[li].errors.clone();
+            // println!("out delta: {:?}", self.delta_weights[li].to_ndarray(self.net.stream.clone()));
             li -= 1;
 
             // Hidden layers
@@ -282,6 +276,7 @@ impl<'a, 'b> PollingIterator for BackwardIterator<'a, 'b> {
                 false,
                 1f32,
             );
+            // println!("in delta: {:?}", self.delta_weights[li].to_ndarray(self.net.stream.clone()));
 
             PollingResult::Incomplete(self)
         } else {

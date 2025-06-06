@@ -41,7 +41,7 @@ pub fn run_function(
     context: Arc<CudaContext>,
     stream: Arc<CudaStream>,
 ) {
-    let n = a.rows * a.columns;
+    let n = a.len();
     let mut builder = stream.launch_builder(function(context));
     builder.arg(&mut a.slice).arg(&b).arg(&n);
     unsafe {

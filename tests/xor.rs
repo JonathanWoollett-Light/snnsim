@@ -9,6 +9,7 @@ use ndarray::array;
 use ndarray_rand::rand_distr::{self};
 use snnsim::PollingIterator;
 use snnsim::PollingResult;
+use snnsim::ZippedPollingIterator;
 use snnsim::cuda::CudaMatrix;
 use snnsim::encode::rate_coding;
 use snnsim::net::Network;
@@ -159,9 +160,10 @@ fn foreprop() {
         batch_size,
         time_steps,
     );
+    let stream = gpu_net.stream.clone();
     gpu_net.weights = weights
         .iter()
-        .map(|w| CudaMatrix::from_ndarray(gpu_net.stream.clone(), w.view()))
+        .map(|w| CudaMatrix::from_ndarray(stream.clone(), w.view()))
         .collect();
 
     let inputs = array![[1f32, 1f32], [0f32, 0f32], [1f32, 0f32], [0f32, 1f32]];
@@ -173,13 +175,13 @@ fn foreprop() {
     let cpu_inputs = rate_encoded_inputs.clone();
     let gpu_inputs = rate_encoded_inputs
         .axis_iter(Axis(0))
-        .map(|axis| CudaMatrix::from_ndarray(gpu_net.stream.clone(), axis))
+        .map(|axis| CudaMatrix::from_ndarray(stream.clone(), axis))
         .collect::<Vec<_>>();
 
     let cpu_targets = rate_encoded_targets.clone();
     let gpu_targets = rate_encoded_targets
         .axis_iter(Axis(0))
-        .map(|axis| CudaMatrix::from_ndarray(gpu_net.stream.clone(), axis))
+        .map(|axis| CudaMatrix::from_ndarray(stream.clone(), axis))
         .collect::<Vec<_>>();
 
     for (time_step, (cpu_input, gpu_input)) in cpu_inputs
@@ -187,7 +189,7 @@ fn foreprop() {
         .zip(gpu_inputs.into_iter())
         .enumerate()
     {
-        assert_eq!(cpu_input, gpu_input.to_ndarray(gpu_net.stream.clone()));
+        assert_eq!(cpu_input, gpu_input.to_ndarray(stream.clone()));
 
         let cpu_spikes = cpu_net.forward(cpu_input.to_owned());
         let gpu_spikes = gpu_net.forward(gpu_input);
@@ -196,13 +198,11 @@ fn foreprop() {
             let cpuw = &cpu_layer.weighted_inputs[time_step];
             assert_eq!(
                 cpuw,
-                gpu_layer.weighted_inputs[time_step].to_ndarray(gpu_net.stream.clone())
+                gpu_layer.weighted_inputs[time_step].to_ndarray(stream.clone())
             );
             assert_eq!(
                 cpu_layer.membrane_potential,
-                gpu_layer
-                    .membrane_potential
-                    .to_ndarray(gpu_net.stream.clone())
+                gpu_layer.membrane_potential.to_ndarray(stream.clone())
             );
         }
         assert_eq!(cpu_spikes, gpu_spikes.to_ndarray(gpu_net.stream.clone()));
@@ -216,13 +216,30 @@ fn foreprop() {
         back_iter = match back_iter.next() {
             PollingResult::Complete((x, y)) => break (x, y),
             PollingResult::Incomplete(x) => {
-                println!("todo check backprop values here");
+                let ZippedPollingIterator {
+                    a: cpu_iter,
+                    b: gpu_iter,
+                } = &x;
+
+                assert_eq!(
+                    cpu_iter.delta_weights,
+                    gpu_iter
+                        .delta_weights
+                        .iter()
+                        .map(|dw| dw.to_ndarray(stream.clone()))
+                        .collect::<Vec<_>>()
+                );
+
                 x
             }
         };
     };
 
-    for (cpu_error, gpu_error) in cpu_errors.into_iter().zip(gpu_errors.into_iter()) {
-        assert_eq!(cpu_error, gpu_error.to_ndarray(gpu_net.stream.clone()));
-    }
+    assert_eq!(
+        cpu_errors,
+        gpu_errors
+            .into_iter()
+            .map(|dw| dw.to_ndarray(stream.clone()))
+            .collect::<Vec<_>>()
+    );
 }

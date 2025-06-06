@@ -66,8 +66,8 @@ pub trait PollingIterator {
 }
 
 pub struct ZippedPollingIterator<A: PollingIterator, B: PollingIterator> {
-    a: A,
-    b: B,
+    pub a: A,
+    pub b: B,
 }
 impl<A: PollingIterator, B: PollingIterator> PollingIterator for ZippedPollingIterator<A, B> {
     type Item = (<A as PollingIterator>::Item, <B as PollingIterator>::Item);

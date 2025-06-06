@@ -48,7 +48,11 @@ pub fn run_function(
     time_step: usize,
     target_spikes: &CudaMatrix,
 ) {
-    let n = layer.neurons * layer.batch_size;
+    let n = target_spikes.len();
+    assert_eq!(n, layer.spikes[time_step].len());
+    assert_eq!(n, layer.gradients.len());
+    assert_eq!(n, layer.errors.len());
+
     let mut builder = stream.launch_builder(function(context));
     builder
         .arg(&mut layer.spikes[time_step].slice)

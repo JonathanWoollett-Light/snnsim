@@ -18,6 +18,9 @@ pub struct CudaMatrix {
     columns: usize,
 }
 impl CudaMatrix {
+    pub fn len(&self) -> usize {
+        self.rows * self.columns
+    }
     pub fn zeros(stream: Arc<CudaStream>, rows: usize, columns: usize) -> Self {
         Self {
             slice: stream.alloc_zeros(rows * columns).unwrap(),
@@ -61,7 +64,9 @@ pub fn matmul(
 ) {
     gemm(cublas, a, b, c, trans_a, trans_b, 0f32)
 }
-
+/// Performs the BLAS matrix-matrix multiplication operation.
+///
+/// See reference https://www.intel.com/content/www/us/en/docs/onemkl/developer-reference-dpcpp/2023-2/gemm.html
 pub fn gemm(
     cublas: &CudaBlas,
     a: &CudaMatrix,
@@ -71,9 +76,9 @@ pub fn gemm(
     trans_b: bool,
     beta: f32,
 ) {
-    let m = a.rows as i32; // or c.rows
-    let n = b.columns as i32; // or c.columns
-    let k = a.columns as i32; // or b.rows
+    let m = c.rows as i32; // or `op(a.rows)`
+    let n = c.columns as i32; // or `op(b.columns)`
+    let k = if trans_a { a.rows } else { a.columns } as i32; // or the same for `b`
     unsafe {
         cublas
             .gemm(
@@ -92,8 +97,8 @@ pub fn gemm(
                     n,
                     k,
                     alpha: 1f32,
-                    lda: m,
-                    ldb: k,
+                    lda: if trans_a { k } else { m },
+                    ldb: if trans_b { n } else { k },
                     beta,
                     ldc: m,
                 },

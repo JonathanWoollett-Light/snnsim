@@ -53,7 +53,10 @@ pub fn run_function(
     stream: Arc<CudaStream>,
     time_step: usize,
 ) {
-    let n = layer.neurons * layer.batch_size;
+    let n = layer.membrane_potential.len();
+    assert_eq!(n, layer.weighted_inputs[time_step].len());
+    assert_eq!(n, layer.spikes[time_step].len());
+
     let mut builder = stream.launch_builder(function(context));
     builder
         .arg(&mut layer.membrane_potential.slice)
