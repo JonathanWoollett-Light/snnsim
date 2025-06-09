@@ -23,7 +23,7 @@ use snnsim::net::Network;
 // achieve 100% accuracy and will always be simply balancing how good it is at
 // each example.
 #[test]
-fn xor_cpu() {
+fn xor_train() {
     let epochs = 10_000;
     let batch_size = 4;
     let time_steps = 50;
@@ -134,7 +134,7 @@ fn xor_cpu() {
 // TODO `xor_cpu_foreprop` and `xor_cuda_foreprop` should be the same test which
 // tests the CPU and CUDA versions both work and give the same values.
 #[test]
-fn foreprop() {
+fn xor_compare() {
     let batch_size = 4;
     let time_steps = 3;
     let output_spikes = 1;

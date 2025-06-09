@@ -60,6 +60,9 @@ impl Network {
             stream,
         }
     }
+
+    /// Performs the forward pass of a training loop.
+    ///
     /// `spikes` needs to be in column-major format.
     pub fn forward(&mut self, mut spikes: CudaMatrix) -> CudaMatrix {
         self.inputs.push(spikes.clone());
@@ -76,6 +79,8 @@ impl Network {
         spikes
     }
 
+    /// Performs the backward pass of a training loop.
+    ///
     /// Calculate weight updates.
     pub fn backward<'a, 'b>(
         &'a mut self,
