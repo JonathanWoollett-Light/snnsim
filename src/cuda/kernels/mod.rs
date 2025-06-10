@@ -1,4 +1,4 @@
-pub mod add;
+pub mod abs_diff;
 pub mod div;
 pub mod foreprop;
 pub mod hadamard;
