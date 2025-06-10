@@ -7,7 +7,7 @@ edition = "2024"
 ndarray = "0.16.1"
 ndarray-rand = "0.15.0"
 rand = "0.9.1"
-cudarc = { version = "0.16.4", features = ["cuda-version-from-build-system"] }
+cudarc = { git = "https://github.com/JonathanWoollett-Light/cudarc", rev="662b08a92c1db9c1530c8dcae498ec904f05842d", features = ["cuda-version-from-build-system"] }
 
 reqwest = { version = "0.12.19", optional = true, features = ["blocking"] }
 flate2 = { version = "1.1.2", optional = true }

@@ -21,6 +21,26 @@ pub struct Network {
     pub stream: Arc<CudaStream>,
 }
 impl Network {
+    /// Estimate how many bytes a given structure will require.
+    pub fn vram_estimate(
+        first: usize,
+        hidden_layers: &[usize],
+        batch_size: usize,
+        time_steps: usize,
+    ) -> usize {
+        let est = std::iter::once(first)
+            .chain(hidden_layers.iter().copied())
+            .zip(hidden_layers.iter().copied())
+            .fold(0, |mut acc, (a, b)| {
+                acc += size_of::<f32>() * a * b;
+                acc += Layer::vram_estimate(b, batch_size, time_steps);
+                acc
+            });
+        est + (0..time_steps)
+            .map(|_| size_of::<f32>() * batch_size * first)
+            .sum::<usize>()
+    }
+
     pub fn new(
         first: usize,
         hidden_layers: &[usize],
@@ -55,7 +75,7 @@ impl Network {
             weights,
             layers,
             inputs: (0..time_steps)
-                .map(|_| CudaMatrix::zeros(stream.clone(), batch_size, first))
+                .map(|_| CudaMatrix::zeros(stream.clone(), batch_size, first).unwrap())
                 .collect(),
             time_step: 0,
             context,
@@ -66,7 +86,7 @@ impl Network {
     // TODO These lifetimes may be a little overly restrictive on `spikes`.
     /// Performs the forward pass of a training loop.
     ///
-    /// `spikes` needs to be in column-major format.
+    /// - `spikes` needs to be in column-major format.
     pub fn forward(&mut self, spikes: &CudaMatrix) -> &CudaMatrix {
         self.stream
             .memcpy_dtod(&spikes.slice, &mut self.inputs[self.time_step].slice)
@@ -102,7 +122,7 @@ impl Network {
         let delta_weights = self
             .weights
             .iter()
-            .map(|w| CudaMatrix::zeros(self.stream.clone(), w.rows, w.columns))
+            .map(|w| CudaMatrix::zeros(self.stream.clone(), w.rows, w.columns).unwrap())
             .collect::<Vec<_>>();
 
         BackwardIterator {
@@ -113,14 +133,15 @@ impl Network {
         }
     }
 
-    /// Update weights.
-    pub fn update(&mut self, learning_rate: f32, delta_weights: &[CudaMatrix]) {
-        // Reset stored data.
+    /// Clears stored values and resets internal timestep.
+    ///
+    /// This should be used before calling [`Network::forward`] when you intend
+    /// to use data from these execution for training (e.g. [`Network::backward`]).
+    pub fn clear(&mut self) {
         for input in self.inputs.iter_mut() {
             self.stream.memset_zeros(&mut input.slice).unwrap();
         }
         for layer in self.layers.iter_mut() {
-            layer.weighted_inputs = Vec::new();
             for weighted_inputs in layer.weighted_inputs.iter_mut() {
                 self.stream
                     .memset_zeros(&mut weighted_inputs.slice)
@@ -131,8 +152,10 @@ impl Network {
             }
         }
         self.time_step = 0;
+    }
 
-        // Update weights.
+    /// Update weights.
+    pub fn update(&mut self, learning_rate: f32, delta_weights: &[CudaMatrix]) {
         for (weights, delta_weights) in self.weights.iter_mut().zip(delta_weights.iter()) {
             crate::cuda::kernels::weight_update::run_function(
                 weights,
@@ -158,6 +181,19 @@ pub struct Layer {
     pub errors: CudaMatrix,
 }
 impl Layer {
+    /// Estimate how many bytes a given structure will require.
+    pub fn vram_estimate(neurons: usize, batch_size: usize, time_steps: usize) -> usize {
+        let membrane_potential = size_of::<f32>() * batch_size * neurons;
+        let weight_inputs = (0..time_steps)
+            .map(|_| size_of::<f32>() * batch_size * neurons)
+            .sum::<usize>();
+        let spikes = (0..time_steps)
+            .map(|_| size_of::<f32>() * batch_size * neurons)
+            .sum::<usize>();
+        let gradients = size_of::<f32>() * batch_size * neurons;
+        let errors = size_of::<f32>() * batch_size * neurons;
+        membrane_potential + weight_inputs + spikes + gradients + errors
+    }
     pub fn new(
         decay: f32,
         threshold: f32,
@@ -170,17 +206,17 @@ impl Layer {
     ) -> Layer {
         Layer {
             cublas,
-            membrane_potential: CudaMatrix::zeros(stream.clone(), batch_size, neurons),
+            membrane_potential: CudaMatrix::zeros(stream.clone(), batch_size, neurons).unwrap(),
             weighted_inputs: (0..time_steps)
-                .map(|_| CudaMatrix::zeros(stream.clone(), batch_size, neurons))
+                .map(|_| CudaMatrix::zeros(stream.clone(), batch_size, neurons).unwrap())
                 .collect(),
             spikes: (0..time_steps)
-                .map(|_| CudaMatrix::zeros(stream.clone(), batch_size, neurons))
+                .map(|_| CudaMatrix::zeros(stream.clone(), batch_size, neurons).unwrap())
                 .collect(),
             threshold,
             decay,
-            gradients: CudaMatrix::zeros(stream.clone(), batch_size, neurons),
-            errors: CudaMatrix::zeros(stream.clone(), batch_size, neurons),
+            gradients: CudaMatrix::zeros(stream.clone(), batch_size, neurons).unwrap(),
+            errors: CudaMatrix::zeros(stream.clone(), batch_size, neurons).unwrap(),
         }
     }
     /// `input` and `weights` need to be in column-major format.

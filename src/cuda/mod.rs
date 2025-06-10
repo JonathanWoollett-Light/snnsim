@@ -21,12 +21,16 @@ impl CudaMatrix {
     pub fn len(&self) -> usize {
         self.rows * self.columns
     }
-    pub fn zeros(stream: Arc<CudaStream>, rows: usize, columns: usize) -> Self {
-        Self {
-            slice: stream.alloc_zeros(rows * columns).unwrap(),
+    pub fn zeros(
+        stream: Arc<CudaStream>,
+        rows: usize,
+        columns: usize,
+    ) -> Result<Self, cudarc::driver::DriverError> {
+        Ok(Self {
+            slice: stream.alloc_zeros(rows * columns)?,
             rows,
             columns,
-        }
+        })
     }
     pub fn from_ndarray<T: RawData + Data>(
         stream: Arc<CudaStream>,
