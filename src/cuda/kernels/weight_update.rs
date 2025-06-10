@@ -7,23 +7,8 @@ use cudarc::{
 
 use crate::cuda::CudaMatrix;
 
-static KERNEL: LazyLock<Ptx> = LazyLock::new(|| {
-    compile_ptx(
-        r#"
-extern "C" __global__ void snn_weight_update_kernel(
-    float* a,
-    float* b,
-    float c,
-    size_t numel
-) {
-    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < numel) {
-        a[i] = a[i] - (b[i] * c);
-    }
-}"#,
-    )
-    .unwrap()
-});
+static KERNEL: LazyLock<Ptx> =
+    LazyLock::new(|| compile_ptx(include_str!("cuda_kernels/weight_update.cu")).unwrap());
 
 fn module(context: Arc<CudaContext>) -> Arc<CudaModule> {
     static FOREPROP_MODULE: OnceLock<Arc<CudaModule>> = OnceLock::new();

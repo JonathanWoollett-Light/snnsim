@@ -7,24 +7,8 @@ use cudarc::{
 
 use crate::cuda::CudaMatrix;
 
-static KERNEL: LazyLock<Ptx> = LazyLock::new(|| {
-    compile_ptx(
-        r#"
-extern "C" __global__ void snn_abs_diff_kernel(
-    float* a,
-    float* b,
-    float* c,
-    size_t numel
-) {
-    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < numel) {
-        float x = b[i] - c[i];
-        a[i] = a[i] + (x * x);
-    }
-}"#,
-    )
-    .unwrap()
-});
+static KERNEL: LazyLock<Ptx> =
+    LazyLock::new(|| compile_ptx(include_str!("cuda_kernels/abs_diff.cu")).unwrap());
 
 fn module(context: Arc<CudaContext>) -> Arc<CudaModule> {
     static FOREPROP_MODULE: OnceLock<Arc<CudaModule>> = OnceLock::new();
@@ -34,7 +18,11 @@ fn module(context: Arc<CudaContext>) -> Arc<CudaModule> {
 }
 fn function<'a>(context: Arc<CudaContext>) -> &'a CudaFunction {
     static FUNCTION: OnceLock<CudaFunction> = OnceLock::new();
-    FUNCTION.get_or_init(|| module(context).load_function("snn_abs_diff_kernel").unwrap())
+    FUNCTION.get_or_init(|| {
+        module(context)
+            .load_function("snn_abs_diff_kernel")
+            .unwrap()
+    })
 }
 
 pub fn run_function(
@@ -46,7 +34,11 @@ pub fn run_function(
 ) {
     let n = a.len();
     let mut builder = stream.launch_builder(function(context));
-    builder.arg(&mut a.slice).arg(&b.slice).arg(&c.slice).arg(&n);
+    builder
+        .arg(&mut a.slice)
+        .arg(&b.slice)
+        .arg(&c.slice)
+        .arg(&n);
     unsafe {
         builder
             .launch(LaunchConfig::for_num_elems(n as u32))

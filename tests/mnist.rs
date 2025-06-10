@@ -88,14 +88,14 @@ fn mnist() {
         stream.memset_zeros(&mut spike_errors.slice).unwrap();
         for (batch_images, batch_labels) in train_images.iter().zip(train_labels.iter()) {
             // Iterate across time steps.
-            for (timestep_images,timestep_labels) in batch_images.iter().zip(batch_labels.iter()) {
+            for (timestep_images, timestep_labels) in batch_images.iter().zip(batch_labels.iter()) {
                 let timestep_spikes = network.forward(timestep_images);
                 snnsim::cuda::kernels::abs_diff::run_function(
                     &mut spike_errors,
-                    timestep_labels, 
+                    timestep_labels,
                     timestep_spikes,
                     context.clone(),
-                    stream.clone()
+                    stream.clone(),
                 );
             }
             // Calculate weight updates.
@@ -106,15 +106,15 @@ fn mnist() {
         }
         // Test
         stream.memset_zeros(&mut spike_errors.slice).unwrap();
-        for (timestep_images,timestep_labels) in test_images.iter().zip(test_labels.iter()) {
+        for (timestep_images, timestep_labels) in test_images.iter().zip(test_labels.iter()) {
             // Iterate across time steps.
             let timestep_spikes = network.forward(timestep_images);
             snnsim::cuda::kernels::abs_diff::run_function(
                 &mut spike_errors,
-                timestep_labels, 
+                timestep_labels,
                 timestep_spikes,
                 context.clone(),
-                stream.clone()
+                stream.clone(),
             );
         }
     }
