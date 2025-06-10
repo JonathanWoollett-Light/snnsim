@@ -1,7 +1,7 @@
 use std::f32::consts::PI;
 
-use ndarray::Array3;
 use ndarray::{Array, Array2, Data, Ix2, RawData};
+use ndarray::{Array3, ArrayView2};
 use ndarray::{ArrayBase, Axis};
 use ndarray_rand::RandomExt;
 
@@ -51,13 +51,14 @@ impl Network {
     /// `spikes`: `[samples x features]`.
     ///
     /// Returns `[samples x output spikes]`.
-    pub fn forward(&mut self, mut spikes: Array2<f32>) -> Array2<f32> {
-        self.inputs.push(spikes.clone());
+    pub fn forward(&mut self, spikes: Array2<f32>) -> ArrayView2<f32> {
+        self.inputs.push(spikes);
 
+        let mut spikes_view = self.inputs.last().unwrap().view();
         for (layer, weights) in self.layers.iter_mut().zip(self.weights.iter()) {
-            spikes = layer.forward(&spikes, weights);
+            spikes_view = layer.forward(spikes_view, weights);
         }
-        spikes
+        spikes_view
     }
 
     /// Calculate weight updates.
@@ -93,11 +94,14 @@ impl Network {
 
     /// Update weights.
     pub fn update(&mut self, learning_rate: f32, delta_weights: Vec<Array2<f32>>) {
+        // Reset stored data.
         self.inputs = Vec::new();
         for layer in self.layers.iter_mut() {
             layer.weighted_inputs = Vec::new();
             layer.spikes = Vec::new();
         }
+
+        // Update weights.
         for (weights, delta_weights) in self.weights.iter_mut().zip(delta_weights.into_iter()) {
             // TODO Surely we don't need to clone `weights` here?
             *weights = weights.clone() - (learning_rate * delta_weights);
@@ -141,11 +145,11 @@ impl Layer {
     ///
     /// - `input`: `[samples x features]`
     /// - `weights`: `[features x neurons]`
-    fn forward<T: RawData<Elem = f32> + Data>(
-        &mut self,
-        input: &Array2<f32>,
+    fn forward<'a, T: RawData<Elem = f32> + Data>(
+        &'a mut self,
+        input: ArrayView2<f32>,
         weights: &ArrayBase<T, Ix2>,
-    ) -> Array2<f32> {
+    ) -> ArrayView2<'a, f32> {
         // Apply input and decay.
         let spiked = self
             .membrane_potential
@@ -162,7 +166,7 @@ impl Layer {
             &self.membrane_potential - (&self.decay * &spiked * &self.threshold);
         // println!("m: {:?}",self.membrane_potential.as_slice().unwrap());
         self.spikes.push(spiked.clone());
-        spiked
+        self.spikes.last().unwrap().view()
     }
 }
 

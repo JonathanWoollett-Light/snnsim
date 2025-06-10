@@ -192,8 +192,12 @@ fn xor_compare() {
         assert_eq!(cpu_input, gpu_input.to_ndarray(stream.clone()));
 
         let cpu_spikes = cpu_net.forward(cpu_input.to_owned());
-        let gpu_spikes = gpu_net.forward(gpu_input);
+        let gpu_spikes = gpu_net.forward(&gpu_input);
 
+        assert_eq!(
+            cpu_spikes,
+            gpu_spikes.clone().to_ndarray(gpu_net.stream.clone())
+        );
         for (cpu_layer, gpu_layer) in cpu_net.layers.iter().zip(gpu_net.layers.iter()) {
             let cpuw = &cpu_layer.weighted_inputs[time_step];
             assert_eq!(
@@ -205,7 +209,6 @@ fn xor_compare() {
                 gpu_layer.membrane_potential.to_ndarray(stream.clone())
             );
         }
-        assert_eq!(cpu_spikes, gpu_spikes.to_ndarray(gpu_net.stream.clone()));
     }
 
     let cpu_back_iter = cpu_net.backward(&cpu_targets);

@@ -54,21 +54,27 @@ impl Network {
         Network {
             weights,
             layers,
-            inputs: Vec::new(),
+            inputs: (0..time_steps)
+                .map(|_| CudaMatrix::zeros(stream.clone(), batch_size, first))
+                .collect(),
             time_step: 0,
             context,
             stream,
         }
     }
 
+    // TODO These lifetimes may be a little overly restrictive on `spikes`.
     /// Performs the forward pass of a training loop.
     ///
     /// `spikes` needs to be in column-major format.
-    pub fn forward(&mut self, mut spikes: CudaMatrix) -> CudaMatrix {
-        self.inputs.push(spikes.clone());
+    pub fn forward(&mut self, spikes: &CudaMatrix) -> &CudaMatrix {
+        self.stream
+            .memcpy_dtod(&spikes.slice, &mut self.inputs[self.time_step].slice)
+            .unwrap();
+        let mut spikes_ref = &self.inputs[self.time_step];
         for (layer, weights) in self.layers.iter_mut().zip(self.weights.iter()) {
-            spikes = layer.forward(
-                spikes,
+            spikes_ref = layer.forward(
+                spikes_ref,
                 weights,
                 self.time_step,
                 self.context.clone(),
@@ -76,7 +82,7 @@ impl Network {
             );
         }
         self.time_step += 1;
-        spikes
+        spikes_ref
     }
 
     /// Performs the backward pass of a training loop.
@@ -104,6 +110,37 @@ impl Network {
             target_spikes,
             delta_weights,
             inner: target_spikes.iter().enumerate().rev(),
+        }
+    }
+
+    /// Update weights.
+    pub fn update(&mut self, learning_rate: f32, delta_weights: &[CudaMatrix]) {
+        // Reset stored data.
+        for input in self.inputs.iter_mut() {
+            self.stream.memset_zeros(&mut input.slice).unwrap();
+        }
+        for layer in self.layers.iter_mut() {
+            layer.weighted_inputs = Vec::new();
+            for weighted_inputs in layer.weighted_inputs.iter_mut() {
+                self.stream
+                    .memset_zeros(&mut weighted_inputs.slice)
+                    .unwrap();
+            }
+            for spikes in layer.spikes.iter_mut() {
+                self.stream.memset_zeros(&mut spikes.slice).unwrap();
+            }
+        }
+        self.time_step = 0;
+
+        // Update weights.
+        for (weights, delta_weights) in self.weights.iter_mut().zip(delta_weights.iter()) {
+            crate::cuda::kernels::weight_update::run_function(
+                weights,
+                &delta_weights,
+                learning_rate,
+                self.context.clone(),
+                self.stream.clone(),
+            );
         }
     }
 }
@@ -149,26 +186,26 @@ impl Layer {
     /// `input` and `weights` need to be in column-major format.
     pub fn forward(
         &mut self,
-        input: CudaMatrix,
+        input: &CudaMatrix,
         weights: &CudaMatrix,
         time_step: usize,
         context: Arc<CudaContext>,
         stream: Arc<CudaStream>,
-    ) -> CudaMatrix {
+    ) -> &CudaMatrix {
         // TODO This does quite a bit of redundant work, would it be more
         // efficient to write a custom kernel that just does the matrix
         // multiplication?
         // Calculate weighted input for this time-step.
         crate::cuda::matmul(
             &self.cublas,
-            &input,
+            &*input,
             weights,
             &mut self.weighted_inputs[time_step],
             false,
             false,
         );
         kernels::foreprop::run_function(self, context, stream, time_step);
-        self.spikes[time_step].clone()
+        &self.spikes[time_step]
     }
 }
 

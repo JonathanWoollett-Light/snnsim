@@ -13,7 +13,7 @@ pub mod net;
 
 #[derive(Debug, Clone)]
 pub struct CudaMatrix {
-    slice: CudaSlice<f32>,
+    pub slice: CudaSlice<f32>,
     rows: usize,
     columns: usize,
 }
