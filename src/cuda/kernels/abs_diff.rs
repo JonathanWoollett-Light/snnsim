@@ -32,6 +32,9 @@ pub fn run_function(
     context: Arc<CudaContext>,
     stream: Arc<CudaStream>,
 ) {
+    debug_assert_eq!(a.len(),b.len());
+    debug_assert_eq!(b.len(),c.len());
+    
     let n = a.len();
     let mut builder = stream.launch_builder(function(context));
     builder

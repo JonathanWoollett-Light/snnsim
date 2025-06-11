@@ -119,17 +119,11 @@ impl Network {
             self.layers.last().unwrap().spikes.len()
         );
 
-        let delta_weights = self
-            .weights
-            .iter()
-            .map(|w| CudaMatrix::zeros(self.stream.clone(), w.rows, w.columns).unwrap())
-            .collect::<Vec<_>>();
-
         BackwardIterator {
             net: self,
             target_spikes,
-            delta_weights,
             inner: target_spikes.iter().enumerate().rev(),
+            first: true,
         }
     }
 
@@ -154,12 +148,12 @@ impl Network {
         self.time_step = 0;
     }
 
-    /// Update weights.
-    pub fn update(&mut self, learning_rate: f32, delta_weights: &[CudaMatrix]) {
-        for (weights, delta_weights) in self.weights.iter_mut().zip(delta_weights.iter()) {
+    /// Update weights based of stored delta weights in each layer.
+    pub fn update(&mut self, learning_rate: f32) {
+        for (weights, layer) in self.weights.iter_mut().zip(self.layers.iter()) {
             crate::cuda::kernels::weight_update::run_function(
                 weights,
-                &delta_weights,
+                &layer.delta_weights,
                 learning_rate,
                 self.context.clone(),
                 self.stream.clone(),
@@ -179,6 +173,7 @@ pub struct Layer {
     pub cublas: Arc<CudaBlas>,
     pub gradients: CudaMatrix,
     pub errors: CudaMatrix,
+    pub delta_weights: CudaMatrix,
 }
 impl Layer {
     /// Estimate how many bytes a given structure will require.
@@ -217,6 +212,7 @@ impl Layer {
             decay,
             gradients: CudaMatrix::zeros(stream.clone(), batch_size, neurons).unwrap(),
             errors: CudaMatrix::zeros(stream.clone(), batch_size, neurons).unwrap(),
+            delta_weights: CudaMatrix::zeros(stream.clone(), batch_size, neurons).unwrap(),
         }
     }
     /// `input` and `weights` need to be in column-major format.
@@ -228,6 +224,8 @@ impl Layer {
         context: Arc<CudaContext>,
         stream: Arc<CudaStream>,
     ) -> &CudaMatrix {
+        // stream.synchronize().unwrap();
+        // let matmul_start = std::time::Instant::now();
         // TODO This does quite a bit of redundant work, would it be more
         // efficient to write a custom kernel that just does the matrix
         // multiplication?
@@ -240,7 +238,12 @@ impl Layer {
             false,
             false,
         );
-        kernels::foreprop::run_function(self, context, stream, time_step);
+        // stream.synchronize().unwrap();
+        // println!("matmul: {:.2?}",matmul_start.elapsed());
+        // let forepropfunction_start = std::time::Instant::now();
+        kernels::foreprop::run_function(self, context, stream.clone(), time_step);
+        // stream.synchronize().unwrap();
+        // println!("forepropfunction_start: {:.2?}",forepropfunction_start.elapsed());
         &self.spikes[time_step]
     }
 }
@@ -248,46 +251,61 @@ impl Layer {
 pub struct BackwardIterator<'a, 'b> {
     pub net: &'a mut Network,
     target_spikes: &'b [CudaMatrix],
-    pub delta_weights: Vec<CudaMatrix>,
+    // Denoates if at the first time-step, this is useful since instead of
+    // re-allocating or re-zero-ing `delta_weights` before creating
+    // `BackwardIterator` we simply set `beta` to `0f32` which does it as apart
+    // of `gemm`.
+    first: bool,
     inner: iter::Rev<iter::Enumerate<std::slice::Iter<'b, CudaMatrix>>>,
 }
 impl<'a, 'b> PollingIterator for BackwardIterator<'a, 'b> {
-    type Item = Vec<CudaMatrix>;
+    type Item = Vec<&'a CudaMatrix>;
     fn next(mut self) -> PollingResult<Self, Self::Item> {
         if let Some((ti, targets)) = self.inner.next() {
+            // 1 when first (the first processed is the last time step), else 0.
+            let beta = self.first as u8 as f32;
+
             let mut li = self.net.layers.len() - 1;
 
+            let ([.., prev_layer], [layer, ..]) = self.net.layers.split_at_mut(li) else {
+                unreachable!()
+            };
             // Output layer.
             kernels::surrogate::run_function(
-                &mut self.net.layers[li],
+                layer,
                 self.net.context.clone(),
                 self.net.stream.clone(),
                 ti,
             );
             kernels::output_error::run_function(
-                &mut self.net.layers[li],
+                layer,
                 self.net.context.clone(),
                 self.net.stream.clone(),
                 ti,
                 targets,
             );
-            let output_previous_spikes = &self.net.layers[li - 1].spikes[ti];
             crate::cuda::gemm(
-                &self.net.layers[li].cublas,
-                output_previous_spikes,
-                &self.net.layers[li].errors,
-                &mut self.delta_weights[li],
+                &layer.cublas,
+                &prev_layer.spikes[ti], // Previous spikes.
+                &layer.errors,
+                &mut layer.delta_weights,
                 true,
                 false,
-                1f32,
+                beta,
             );
-            let mut delta_next = self.net.layers[li].errors.clone();
-            // println!("out delta: {:?}", self.delta_weights[li].to_ndarray(self.net.stream.clone()));
+            let [rem @ .., prev] = self.net.layers.as_mut_slice() else {
+                unreachable!()
+            };
+            let mut remaining = rem;
+            let mut delta_next = &prev.errors;
             li -= 1;
 
             // Hidden layers
             while li > 0 {
-                let layer = &mut self.net.layers[li];
+                let ([.., prev_layer], [layer, ..]) = remaining.split_at_mut(li) else {
+                    unreachable!()
+                };
+
                 kernels::surrogate::run_function(
                     layer,
                     self.net.context.clone(),
@@ -308,22 +326,26 @@ impl<'a, 'b> PollingIterator for BackwardIterator<'a, 'b> {
                     self.net.context.clone(),
                     self.net.stream.clone(),
                 );
-                let previous_spikes = &self.net.layers[li - 1].spikes[ti];
                 crate::cuda::gemm(
-                    &self.net.layers[li].cublas,
-                    previous_spikes,
-                    &self.net.layers[li].errors,
-                    &mut self.delta_weights[li],
+                    &layer.cublas,
+                    &prev_layer.spikes[ti], // Previous spikes.
+                    &layer.errors,
+                    &mut layer.delta_weights,
                     true,
                     false,
-                    1f32,
+                    beta,
                 );
-                delta_next = self.net.layers[li].errors.clone();
+
+                let [rem @ .., prev] = remaining else {
+                    unreachable!()
+                };
+                remaining = rem;
+                delta_next = &prev.errors;
                 li -= 1;
             }
 
             // Input layer
-            let layer = &mut self.net.layers[li];
+            let layer = &mut remaining[li];
             kernels::surrogate::run_function(
                 layer,
                 self.net.context.clone(),
@@ -344,25 +366,23 @@ impl<'a, 'b> PollingIterator for BackwardIterator<'a, 'b> {
                 self.net.context.clone(),
                 self.net.stream.clone(),
             );
-            let previous_spikes = &self.net.inputs[ti];
             crate::cuda::gemm(
                 &layer.cublas,
-                previous_spikes,
+                &self.net.inputs[ti], // Previous spikes.
                 &layer.errors,
-                &mut self.delta_weights[li],
+                &mut layer.delta_weights,
                 true,
                 false,
-                1f32,
+                beta,
             );
-            // println!("in delta: {:?}", self.delta_weights[li].to_ndarray(self.net.stream.clone()));
-
+            self.first = false;
             PollingResult::Incomplete(self)
         } else {
             // Divide weight updates by time steps.
             let n = self.target_spikes.iter().map(|t| t.len()).sum::<usize>() as f32;
-            for delta_weights in self.delta_weights.iter_mut() {
+            for layer in self.net.layers.iter_mut() {
                 kernels::div::run_function(
-                    delta_weights,
+                    &mut layer.delta_weights,
                     n,
                     self.net.context.clone(),
                     self.net.stream.clone(),
@@ -370,7 +390,13 @@ impl<'a, 'b> PollingIterator for BackwardIterator<'a, 'b> {
             }
 
             // Return weight updates.
-            PollingResult::Complete(self.delta_weights)
+            PollingResult::Complete(
+                self.net
+                    .layers
+                    .iter()
+                    .map(|l| &l.delta_weights)
+                    .collect::<Vec<_>>(),
+            )
         }
     }
 }

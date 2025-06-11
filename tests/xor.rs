@@ -227,9 +227,10 @@ fn xor_compare() {
                 assert_eq!(
                     cpu_iter.delta_weights,
                     gpu_iter
-                        .delta_weights
+                        .net
+                        .layers
                         .iter()
-                        .map(|dw| dw.to_ndarray(stream.clone()))
+                        .map(|l| l.delta_weights.to_ndarray(stream.clone()))
                         .collect::<Vec<_>>()
                 );
 

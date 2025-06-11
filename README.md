@@ -63,6 +63,7 @@ Spike Timing Dependant Plasticity (STDP)|x
 
 ### Misc
 
+- run `snnTorch` to compare and improve until reaching similar performance for mnist.
 - add a `connectivity` parameter to support sparsely connected spiking layers like snnTorch which supports connecting layers with conv layer connectivity.
 - should `backward` take some cost rather than just the target spikes?
 - look at using for [cusparse](https://docs.nvidia.com/cuda/cusparse/) for sparse matrix operations. This might require more complex logic to check when it is worth using sparse matrix operations.

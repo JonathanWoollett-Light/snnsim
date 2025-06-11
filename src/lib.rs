@@ -2,8 +2,6 @@ use ndarray::{Data, Ix2, RawData};
 
 pub mod cuda;
 pub mod encode;
-#[cfg(feature = "mnist")]
-pub mod mnist;
 pub mod net;
 
 const DEFAULT_DECAY: f32 = 0.8f32;
